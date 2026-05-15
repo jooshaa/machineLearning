@@ -22,20 +22,20 @@ def extract_l3_features(mbo_df: pd.DataFrame, events_df: pd.DataFrame) -> pd.Dat
     # We need to compute delta over a rolling window of events
     df["delta"] = np.where(df["side"] == "A", df["size"], -df["size"])
     df["cvd"] = df["delta"].cumsum()
-    df["cvd_baseline"] = df["delta"].rolling(500, min_periods=50).std().fillna(0)
+    df["cvd_baseline"] = df["delta"].rolling(50, min_periods=5).std().fillna(0)
 
     # 2. True Absorption Detection
     # Maximum sensitivity for discovery
     rolling_vol_30 = df["size"].rolling(30).sum()
     delta_30 = df["delta"].rolling(30).sum()
     price_range_30 = df["price"].rolling(30).apply(lambda x: x.max() - x.min(), raw=True)
-    price_range_mean = price_range_30.rolling(200, min_periods=20).mean()
-    rolling_vol_mean = rolling_vol_30.rolling(200, min_periods=20).mean()
+    price_range_mean = price_range_30.rolling(30, min_periods=5).mean()
+    rolling_vol_mean = rolling_vol_30.rolling(30, min_periods=5).mean()
 
     df["absorption_flag"] = (
         (rolling_vol_30 > rolling_vol_mean * 1.2) &
         (abs(delta_30) > rolling_vol_30 * 0.015) &
-        (price_range_30 < price_range_mean * 0.3)
+        (price_range_30 < price_range_mean * 1.2)
     )
     df["absorption_strength"] = np.where(df["absorption_flag"], abs(delta_30), 0.0)
 
@@ -102,24 +102,59 @@ def extract_l3_features(mbo_df: pd.DataFrame, events_df: pd.DataFrame) -> pd.Dat
     else:
         df["spoof_activity"] = 0.0
 
-    # D1: CVD дивергенция
+    # D1: CVD divergence (RELAXED FOR ML DISCOVERY)
+
     df["price_slope"] = (
         df["price"]
-        .rolling(10)
-        .apply(lambda x: np.polyfit(np.arange(len(x)), x, 1)[0] if len(x) == 10 else 0)
+        .rolling(5)
+        .apply(
+            lambda x: np.polyfit(np.arange(len(x)), x, 1)[0]
+            if len(x) == 5 else 0
+        )
     )
+
     df["cvd_slope"] = (
         df["cvd"]
-        .rolling(10)
-        .apply(lambda x: np.polyfit(np.arange(len(x)), x, 1)[0] if len(x) == 10 else 0)
+        .rolling(5)
+        .apply(
+            lambda x: np.polyfit(np.arange(len(x)), x, 1)[0]
+            if len(x) == 5 else 0
+        )
     )
 
     cvd_div = np.zeros(len(df))
-    # Медвежья дивергенция (цена растет/стоит, CVD падает)
-    cvd_div[(df["price_slope"] >= -0.1) & (df["cvd_slope"] < -5)] = -1
-    # Бычья дивергенция (цена падает/стоит, CVD растет)
-    cvd_div[(df["price_slope"] <= 0.1) & (df["cvd_slope"] > 5)] = 1
+
+    # Bearish divergence
+    cvd_div[
+        (df["price_slope"] >= -0.5) &
+        (df["cvd_slope"] < -1)
+    ] = -1
+
+    # Bullish divergence
+    cvd_div[
+        (df["price_slope"] <= 0.5) &
+        (df["cvd_slope"] > 1)
+    ] = 1
+
     df["cvd_divergence"] = cvd_div
+
+    # Extra relaxed participation logic
+    df["delta_velocity"] = (
+        df["cvd"]
+        .diff()
+        .rolling(3)
+        .mean()
+        .fillna(0)
+    )
+
+    df["participation_event"] = (
+        (abs(df["cvd_slope"]) > 1) |
+        (abs(df["price_slope"]) > 0.2)
+    ).astype(int)
+
+    print(f"[DEBUG] participation events: {df['participation_event'].sum()}")
+    print(f"[DEBUG] bullish divs: {(df['cvd_divergence'] == 1).sum()}")
+    print(f"[DEBUG] bearish divs: {(df['cvd_divergence'] == -1).sum()}")
 
     # C2: UNCLEAR thresholds (volume profile std)
     df["vp_std"] = df["size"].rolling(20, min_periods=5).std().fillna(0)
