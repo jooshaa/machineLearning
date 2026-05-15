@@ -8,6 +8,9 @@ def extract_l3_features(mbo_df: pd.DataFrame, events_df: pd.DataFrame) -> pd.Dat
     mbo_df: Raw MBO databento data (to track spoofs, cancels)
     events_df: The Trade events enriched with L3 snapshots from OrderBookL3
     """
+    print(f"[DEBUG] mbo_df rows: {len(mbo_df)}")
+    print(f"[DEBUG] events_df rows BEFORE features: {len(events_df)}")
+
     if events_df.empty:
         return pd.DataFrame()
 
@@ -106,20 +109,18 @@ def extract_l3_features(mbo_df: pd.DataFrame, events_df: pd.DataFrame) -> pd.Dat
 
     df["price_slope"] = (
         df["price"]
+        .diff()
         .rolling(5)
-        .apply(
-            lambda x: np.polyfit(np.arange(len(x)), x, 1)[0]
-            if len(x) == 5 else 0
-        )
+        .mean()
+        .fillna(0)
     )
 
     df["cvd_slope"] = (
         df["cvd"]
+        .diff()
         .rolling(5)
-        .apply(
-            lambda x: np.polyfit(np.arange(len(x)), x, 1)[0]
-            if len(x) == 5 else 0
-        )
+        .mean()
+        .fillna(0)
     )
 
     cvd_div = np.zeros(len(df))
@@ -155,6 +156,9 @@ def extract_l3_features(mbo_df: pd.DataFrame, events_df: pd.DataFrame) -> pd.Dat
     print(f"[DEBUG] participation events: {df['participation_event'].sum()}")
     print(f"[DEBUG] bullish divs: {(df['cvd_divergence'] == 1).sum()}")
     print(f"[DEBUG] bearish divs: {(df['cvd_divergence'] == -1).sum()}")
+    
+    high_imb = (df["orderbook_imbalance"] > 2.0) | (df["orderbook_imbalance"] < 0.5)
+    print(f"[DEBUG] high imbalance events (>2.0 or <0.5): {high_imb.sum()}")
 
     # C2: UNCLEAR thresholds (volume profile std)
     df["vp_std"] = df["size"].rolling(20, min_periods=5).std().fillna(0)

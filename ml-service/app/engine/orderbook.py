@@ -96,18 +96,35 @@ def process_mbo_stream(df: pd.DataFrame) -> List[Dict[str, Any]]:
     book = OrderBookL3()
     events = []
     
-    # Фильтруем спреды и аномальные цены до цикла
-    if "symbol" in df.columns:
-        df = df[~df["symbol"].str.contains("-", na=False)]
-    df = df[
-        (df["price"] > 15000) &
-        (df["price"] < 30000)
-    ]
+    print(f"[DEBUG] Raw MBO rows: {len(df)}")
     
+    # Фильтруем спреды и аномальные цены до цикла
+    symbol_filter_mask = pd.Series(True, index=df.index)
+    if "symbol" in df.columns:
+        symbol_filter_mask = ~df["symbol"].str.contains("-", na=False)
+    
+    df_filtered_sym = df[symbol_filter_mask]
+    print(f"[DEBUG] Rows after symbol filter: {len(df_filtered_sym)}")
+    
+    price_filter_mask = (df_filtered_sym["price"] > 1000) & (df_filtered_sym["price"] < 90000)
+    df = df_filtered_sym[price_filter_mask]
+    
+    print(f"[DEBUG] Rows after price filter (1000-90000): {len(df)}")
+
     itertuples = df.itertuples()
     
+    total_processed = 0
+    trade_actions = 0
+    add_actions = 0
+    cancel_actions = 0
+    modify_actions = 0
+    
     for row in itertuples:
+        total_processed += 1
         action = row.action
+        if action == 'A': add_actions += 1
+        elif action == 'C': cancel_actions += 1
+        elif action == 'M': modify_actions += 1
         
         is_trade = book.apply_event(
             action=action,
@@ -118,6 +135,7 @@ def process_mbo_stream(df: pd.DataFrame) -> List[Dict[str, Any]]:
         )
         
         if is_trade:
+            trade_actions += 1
             events.append({
                 "ts": row.Index,
                 "price": row.price,
@@ -129,4 +147,11 @@ def process_mbo_stream(df: pd.DataFrame) -> List[Dict[str, Any]]:
                 "total_ask_liquidity": book.total_ask_liquidity
             })
             
+    print(f"[DEBUG] Iteration summary:")
+    print(f"  - Total processed rows: {total_processed}")
+    print(f"  - Add actions: {add_actions}")
+    print(f"  - Cancel actions: {cancel_actions}")
+    print(f"  - Modify actions: {modify_actions}")
+    print(f"  - Trade actions (triggers): {trade_actions}")
+    print(f"  - Total events recorded: {len(events)}")
     return events
