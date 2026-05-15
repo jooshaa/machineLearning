@@ -165,22 +165,29 @@ def run_l3_backtest(
     month = events_df.iloc[0]["ts"].month
     summer_months = [5, 6, 7, 8]
 
-    # FUNNEL STATS
+    # FUNNEL STATS (Full Diagnostics)
     funnel = {
         "total_events": len(events_df),
-        "blocked_bias": 0,
-        "passed_bias": 0,
+        "blocked_session_time": 0,
+        "blocked_unclear": 0,
+        "blocked_bias_cooldown": 0,
         "blocked_boundary": 0,
         "passed_boundary": 0,
-        "blocked_lvn": 0,
-        "passed_lvn": 0,
-        "blocked_aggression": 0,
+        "blocked_bias_match": 0,
+        "passed_bias_match": 0,
+        "blocked_structural_invalidation": 0,
+        "blocked_retest_zone": 0,
+        "blocked_aggression_impulse": 0,
         "passed_aggression": 0,
         "blocked_internal_poc": 0,
         "passed_internal_poc": 0,
-        "blocked_cooldown": 0,
-        "blocked_traded_level": 0,
+        "blocked_score_threshold": 0,
+        "passed_score": 0,
+        "blocked_direction_mismatch": 0,
+        "blocked_edge_validator": 0,
+        "passed_edge": 0,
         "blocked_rr_too_low": 0,
+        "blocked_trade_cooldown": 0,
         "internal_poc_strict_pass": 0,
         "relaxed_poc_saves": 0,
     }
@@ -406,6 +413,7 @@ def run_l3_backtest(
             ny_time.time() >= pd.to_datetime("16:00").time()
             or ny_time.time() < pd.to_datetime("03:00").time()
         ):
+            funnel["blocked_session_time"] += 1
             continue  # вне сессий: нет торговли
 
         is_ny_session = (
@@ -441,7 +449,6 @@ def run_l3_backtest(
             "UNCLEAR" if (inside_va and cvd_unclear and profile_flat) else regime_type
         )
         if market_state == "UNCLEAR":
-            funnel.setdefault("blocked_unclear", 0)
             funnel["blocked_unclear"] += 1
             continue
 
@@ -461,6 +468,7 @@ def run_l3_backtest(
         bias = bias_state["direction"]
 
         if bias_state["cooldown_until"] and row_ts < bias_state["cooldown_until"]:
+            funnel["blocked_bias_cooldown"] += 1
             continue  # Cooldown after bias shift
 
         event_type = row.get("event_type", "normal")
@@ -511,9 +519,9 @@ def run_l3_backtest(
                 }
                 # print(f"DEBUG Pending: dir={setup_direction}, type={pattern_type}, price={current_price}, bias={bias}")
                 first_impulse_seen = False
-                funnel["passed_boundary"] += 1
+                funnel["passed_bias_match"] += 1
             else:
-                funnel["blocked_bias"] += 1
+                funnel["blocked_bias_match"] += 1
         else:
             funnel["blocked_boundary"] += 1
 
@@ -544,6 +552,7 @@ def run_l3_backtest(
                 invalidated = True
 
             if invalidated:
+                funnel["blocked_structural_invalidation"] += 1
                 pending_context = None
                 continue
 
@@ -554,6 +563,7 @@ def run_l3_backtest(
                 rz_low, rz_high = pending_context["retest_zone"]
                 if not (rz_low <= current_price <= rz_high):
                     # We only allow trade if we are inside the retest zone
+                    funnel["blocked_retest_zone"] += 1
                     continue
 
             if not is_tradable:
@@ -566,7 +576,7 @@ def run_l3_backtest(
 
                 # STEP 4: First Impulse Ignored
                 if not first_impulse_seen:
-                    funnel["blocked_aggression"] += 1
+                    funnel["blocked_aggression_impulse"] += 1
                     first_impulse_seen = True
                     continue  # Wait for retest (second impulse)
                 funnel["passed_aggression"] += 1
@@ -634,9 +644,13 @@ def run_l3_backtest(
         # Validate Edge
         size_mult = 1.0
         if score < 2:
+            funnel["blocked_score_threshold"] += 1
             continue
+        
+        funnel["passed_score"] += 1
 
         if direction != bias.lower():
+            funnel["blocked_direction_mismatch"] += 1
             continue
 
         if use_validated_edge:
@@ -645,7 +659,10 @@ def run_l3_backtest(
             )
             # print(f"DEBUG edge: regime={regime_type}, allowed={allowed}, stability={stability:.3f}, atr={row.get('atr', 10):.1f}")
             if not allowed:
+                funnel["blocked_edge_validator"] += 1
                 continue
+            
+        funnel["passed_edge"] += 1
 
         # STEP 5: Scaling with profit
         if daily_pnl <= 0:
@@ -694,6 +711,7 @@ def run_l3_backtest(
             continue
 
         if last_trade_time and (row["ts"] - last_trade_time) < pd.Timedelta(minutes=30):
+            funnel["blocked_trade_cooldown"] += 1
             continue
 
         trades.append(
@@ -755,6 +773,52 @@ def run_l3_backtest(
         f"📊 L3 Backtest Results: {total} trades executed from {len(events_df)} analyzed events."
     )
     
+    # --- FULL FUNNEL DIAGNOSTICS TABLE ---
+    print("\n" + "="*50)
+    print("📈 FINAL TRADE GENERATION FUNNEL")
+    print("="*50)
+    
+    stages = [
+        ("Total Analyzed Events", funnel.get("total_events", 0)),
+        ("Passed Boundary (VAH/VAL)", funnel.get("passed_boundary", 0)),
+        ("Passed Bias Match", funnel.get("passed_bias_match", 0)),
+        ("Passed Aggression", funnel.get("passed_aggression", 0)),
+        ("Passed Internal POC", funnel.get("passed_internal_poc", 0)),
+        ("Passed Score Threshold", funnel.get("passed_score", 0)),
+        ("Passed Edge Validator", funnel.get("passed_edge", 0)),
+        ("Final Executed Trades", total)
+    ]
+    
+    for stage, count in stages:
+        print(f"{stage:<30} : {count:>8}")
+    
+    print("-" * 50)
+    
+    rejections = {
+        "Session Time": funnel.get("blocked_session_time", 0),
+        "Unclear State": funnel.get("blocked_unclear", 0),
+        "Bias Cooldown": funnel.get("blocked_bias_cooldown", 0),
+        "Boundary Gap": funnel.get("blocked_boundary", 0),
+        "Bias Mismatch": funnel.get("blocked_bias_match", 0),
+        "Structural Invalid": funnel.get("blocked_structural_invalidation", 0),
+        "Retest Zone": funnel.get("blocked_retest_zone", 0),
+        "First Impulse Only": funnel.get("blocked_aggression_impulse", 0),
+        "Internal POC": funnel.get("blocked_internal_poc", 0),
+        "Low Score": funnel.get("blocked_score_threshold", 0),
+        "Direction Mismatch": funnel.get("blocked_direction_mismatch", 0),
+        "Edge Validator": funnel.get("blocked_edge_validator", 0),
+        "Poor RR": funnel.get("blocked_rr_too_low", 0),
+        "Trade Cooldown": funnel.get("blocked_trade_cooldown", 0),
+    }
+    
+    # Sort rejections by frequency
+    sorted_rejections = sorted(rejections.items(), key=lambda x: x[1], reverse=True)
+    
+    print("❌ TOP 5 REJECTION CAUSES:")
+    for i, (reason, count) in enumerate(sorted_rejections[:5]):
+        print(f"{i+1}. {reason:<25} : {count:>8} rejections")
+    print("="*50 + "\n")
+
     # Debug Internal POC relaxation
     s_pass = funnel.get("internal_poc_strict_pass", 0)
     r_pass = funnel.get("passed_internal_poc", 0)
