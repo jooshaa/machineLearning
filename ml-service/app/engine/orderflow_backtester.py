@@ -181,6 +181,8 @@ def run_l3_backtest(
         "blocked_cooldown": 0,
         "blocked_traded_level": 0,
         "blocked_rr_too_low": 0,
+        "internal_poc_strict_pass": 0,
+        "relaxed_poc_saves": 0,
     }
     events_list = events_df.to_dict("records")
     total_events = len(events_list)
@@ -584,12 +586,28 @@ def run_l3_backtest(
                     mini_df = time_window if len(time_window) > 0 else tick_window
                     internal_poc = mini_df.groupby("price")["size"].sum().idxmax()
 
-                    if direction == "sell" and current_price >= internal_poc:
+                    # Institutional Filter 7: Internal POC (RELAXED)
+                    # We allow entry if price is within a small tolerance of POC
+                    # instead of requiring a strict close beyond it.
+                    tick_size = 0.25
+                    poc_tolerance = tick_size * 4 # 1.0 point tolerance for NQ
+                    
+                    is_strict_pass = (direction == "sell" and current_price < internal_poc) or \
+                                     (direction == "buy" and current_price > internal_poc)
+                    
+                    is_relaxed_pass = (direction == "sell" and current_price < (internal_poc + poc_tolerance)) or \
+                                      (direction == "buy" and current_price > (internal_poc - poc_tolerance))
+
+                    if is_strict_pass:
+                        funnel["internal_poc_strict_pass"] += 1
+
+                    if not is_relaxed_pass:
                         funnel["blocked_internal_poc"] += 1
-                        continue  # Rejects: candle hasn't closed below internal POC!
-                    if direction == "buy" and current_price <= internal_poc:
-                        funnel["blocked_internal_poc"] += 1
-                        continue  # Rejects: candle hasn't closed above internal POC!
+                        continue
+                    
+                    if is_relaxed_pass and not is_strict_pass:
+                        funnel["relaxed_poc_saves"] += 1
+                        
                     funnel["passed_internal_poc"] += 1
                 except Exception as e:
                     pass
@@ -736,6 +754,15 @@ def run_l3_backtest(
     print(
         f"📊 L3 Backtest Results: {total} trades executed from {len(events_df)} analyzed events."
     )
+    
+    # Debug Internal POC relaxation
+    s_pass = funnel.get("internal_poc_strict_pass", 0)
+    r_pass = funnel.get("passed_internal_poc", 0)
+    increase = ((r_pass - s_pass) / max(1, s_pass)) * 100
+    print(f"[DEBUG] Filter 7 (Internal POC) Relaxation:")
+    print(f"  - Previous pass count (strict): {s_pass}")
+    print(f"  - New pass count (relaxed):    {r_pass}")
+    print(f"  - Improvement:                +{increase:.1f}%")
 
     stats = {
         "total_trades": total,
