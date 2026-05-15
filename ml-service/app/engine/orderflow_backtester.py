@@ -188,6 +188,9 @@ def run_l3_backtest(
         "passed_edge": 0,
         "blocked_rr_too_low": 0,
         "blocked_trade_cooldown": 0,
+        "cooldown_strict_rejections": 0,
+        "cooldown_relaxed_saves": 0,
+        "cooldown_bypass_high_score": 0,
         "internal_poc_strict_pass": 0,
         "relaxed_poc_saves": 0,
     }
@@ -710,9 +713,40 @@ def run_l3_backtest(
             funnel["blocked_rr_too_low"] += 1
             continue
 
-        if last_trade_time and (row["ts"] - last_trade_time) < pd.Timedelta(minutes=30):
-            funnel["blocked_trade_cooldown"] += 1
-            continue
+        # Institutional Trade Cooldown (RECALIBRATED)
+        if last_trade_time:
+            time_since_last = (row["ts"] - last_trade_time)
+            last_trade_dir = trades[-1]["direction"] if trades else None
+            
+            is_strict_cooldown = time_since_last < pd.Timedelta(minutes=30)
+            
+            # Relaxed rules:
+            # 1. Reduce window to 5 mins
+            # 2. Allow re-entry if high conviction (score >= 4)
+            # 3. Allow re-entry if opposite direction (market flip) after 2 mins
+            
+            relaxed_window = pd.Timedelta(minutes=5)
+            high_conviction = score >= 4
+            direction_flip = direction != last_trade_dir
+            
+            is_relaxed_cooldown = time_since_last < relaxed_window
+            
+            if is_strict_cooldown:
+                funnel["cooldown_strict_rejections"] += 1
+                
+                # Bypasses:
+                if high_conviction:
+                    funnel["cooldown_bypass_high_score"] += 1
+                    is_relaxed_cooldown = False
+                elif direction_flip and time_since_last > pd.Timedelta(minutes=2):
+                    funnel["cooldown_relaxed_saves"] += 1
+                    is_relaxed_cooldown = False
+                elif not is_relaxed_cooldown:
+                    funnel["cooldown_relaxed_saves"] += 1
+
+            if is_relaxed_cooldown:
+                funnel["blocked_trade_cooldown"] += 1
+                continue
 
         trades.append(
             {
@@ -826,7 +860,14 @@ def run_l3_backtest(
     print(f"[DEBUG] Filter 7 (Internal POC) Relaxation:")
     print(f"  - Previous pass count (strict): {s_pass}")
     print(f"  - New pass count (relaxed):    {r_pass}")
-    print(f"  - Improvement:                +{increase:.1f}%")
+    # Debug Cooldown relaxation
+    s_rej = funnel.get("cooldown_strict_rejections", 0)
+    bypassed = funnel.get("cooldown_bypass_high_score", 0) + funnel.get("cooldown_relaxed_saves", 0)
+    print(f"[DEBUG] Trade Cooldown Recalibration:")
+    print(f"  - Strict rejections avoided:  {bypassed} / {max(1, s_rej)}")
+    print(f"  - High-score bypasses:        {funnel.get('cooldown_bypass_high_score', 0)}")
+    print(f"  - Relaxed window/Flip saves:  {funnel.get('cooldown_relaxed_saves', 0)}")
+    print("-" * 50)
 
     stats = {
         "total_trades": total,
