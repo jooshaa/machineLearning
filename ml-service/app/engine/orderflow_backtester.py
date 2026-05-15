@@ -323,7 +323,7 @@ def run_l3_backtest(
                         / abs(trade["entry_price"] - trade["original_stop"])
                     )
                     trade["outcome_R"] = trade["r_multiple"] * trade["size_mult"]
-                    print(f"{trade['exit_reason'].upper()} HIT: entry={trade['entry_price']}, stop={trade['stop']}, exit_price={trade['exit_price']}, original_stop={trade['original_stop']}, r={trade['r_multiple']:.2f}")
+                    # print(f"{trade['exit_reason'].upper()} HIT: entry={trade['entry_price']}, stop={trade['stop']}, exit_price={trade['exit_price']}, original_stop={trade['original_stop']}, r={trade['r_multiple']:.2f}")
                     trade["exit_time"] = row["ts"]
                     trade["early_exit"] = (trade["exit_reason"] == "early_exit")
                     trade["pnl_pts"] = trade["exit_price"] - trade["entry_price"]
@@ -368,7 +368,7 @@ def run_l3_backtest(
                         / abs(trade["entry_price"] - trade["original_stop"])
                     )
                     trade["outcome_R"] = trade["r_multiple"] * trade["size_mult"]
-                    print(f"{trade['exit_reason'].upper()} HIT: entry={trade['entry_price']}, stop={trade['stop']}, exit_price={trade['exit_price']}, original_stop={trade['original_stop']}, r={trade['r_multiple']:.2f}")
+                    # print(f"{trade['exit_reason'].upper()} HIT: entry={trade['entry_price']}, stop={trade['stop']}, exit_price={trade['exit_price']}, original_stop={trade['original_stop']}, r={trade['r_multiple']:.2f}")
                     trade["exit_time"] = row["ts"]
                     trade["early_exit"] = (trade["exit_reason"] == "early_exit")
                     trade["pnl_pts"] = trade["entry_price"] - trade["exit_price"]
@@ -642,7 +642,7 @@ def run_l3_backtest(
         risk = max(20, vol * 0.5)
         MIN_STOP_PTS = 20.0
 
-        print(f"DEBUG entry: direction={direction}, price={current_price}, vol={row.get('volatility', 'MISSING')}, risk={risk}")
+        # print(f"DEBUG entry: direction={direction}, price={current_price}, vol={row.get('volatility', 'MISSING')}, risk={risk}")
         if direction == "buy":
             stop = current_price - risk + tick_size
             # Применяем минимальный стоп
