@@ -52,19 +52,9 @@ def get_prev_day_profile(current_date_str: str) -> tuple:
 
     idx = dates.index(current_date_str)
     if idx == 0:
-        # Предыдущего файла нет — скачиваем
-        from app.data.databento_client import fetch_mbo_data
-        prev_date_obj = pd.to_datetime(current_date_str) - pd.tseries.offsets.BDay(1)
-        prev_date = prev_date_obj.strftime("%Y-%m-%d")
-        fetch_mbo_data('NQ.FUT', f'{prev_date}T14:30:00', f'{prev_date}T21:00:00')
-        # Теперь файл есть — обновляем список
-        files = sorted([f for f in os.listdir(cache_dir) if f.endswith(".parquet")])
-        dates = [f.replace(".parquet", "") for f in files]
-        if current_date_str not in dates:
-            return None, None, None
-        idx = dates.index(current_date_str)
-        if idx == 0:
-            return None, None, None
+        # Previous file not in cache - skip instead of fetching
+        print(f"⚠️ Previous day profile missing for {current_date_str}. Skipping bias calculation from prev day.")
+        return None, None, None
 
     prev_date = dates[idx - 1]
     prev_path = f"{cache_dir}/{prev_date}.parquet"

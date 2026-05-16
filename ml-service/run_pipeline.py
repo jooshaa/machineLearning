@@ -75,44 +75,40 @@ def main():
 
     # Define date range
     # Example: First week of Jan 2023
-    start_date = datetime(2023, 1, 3)
-    end_date = datetime(2023, 1, 10)
-    
-    current_date = start_date
+    # Process all cached files in the directory
+    cache_dir = "data/raw/mbo/NQ"
+    if not os.path.exists(cache_dir):
+        print(f"❌ Cache directory {cache_dir} missing.")
+        return
+        
     all_ml_data = []
     total_trades = 0
+    
+    files = sorted([f for f in os.listdir(cache_dir) if f.endswith(".parquet")])
+    print(f"📂 Found {len(files)} cached files. Processing all...")
 
-    while current_date <= end_date:
-        # Skip weekends
-        if current_date.weekday() < 5:
-            date_str = current_date.strftime("%Y-%m-%d")
-            day_trades = run_pipeline_for_day(date_str)
+    for filename in files:
+        date_str = filename.replace(".parquet", "")
+        day_trades = run_pipeline_for_day(date_str)
+        
+        if day_trades:
+            total_trades += len(day_trades)
+            print(f"📈 Cumulative Trades: {total_trades}")
             
-            if day_trades:
-                all_ml_data.extend(day_trades)
-                total_trades += len(day_trades)
-                print(f"📈 Cumulative Trades: {total_trades}")
-        
-        current_date += timedelta(days=1)
-
-    # 5. Save/Update Master ML Dataset
-    if all_ml_data:
-        os.makedirs("orderflow_ml", exist_ok=True)
-        new_df = pd.DataFrame(all_ml_data)
-        out_path = "orderflow_ml/ml_dataset.csv"
-        
-        if os.path.exists(out_path):
-            existing_df = pd.read_csv(out_path)
-            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
-            # Prevent duplicates by timestamp and direction
-            combined_df.drop_duplicates(subset=["timestamp_utc", "direction"], inplace=True)
-            combined_df.to_csv(out_path, index=False)
-            print(f"\n✅ Master Dataset UPDATED: {out_path} (Total: {len(combined_df)} trades)")
-        else:
-            new_df.to_csv(out_path, index=False)
-            print(f"\n✅ Master Dataset CREATED: {out_path} (Total: {len(new_df)} trades)")
-    else:
-        print("\n❌ No trades generated across the specified range.")
+            # Save incrementally
+            os.makedirs("orderflow_ml", exist_ok=True)
+            new_df = pd.DataFrame(day_trades)
+            out_path = "orderflow_ml/ml_dataset.csv"
+            
+            if os.path.exists(out_path):
+                existing_df = pd.read_csv(out_path)
+                combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                combined_df.drop_duplicates(subset=["timestamp_utc", "direction"], inplace=True)
+                combined_df.to_csv(out_path, index=False)
+                print(f"✅ Dataset updated. Total: {len(combined_df)} trades")
+            else:
+                new_df.to_csv(out_path, index=False)
+                print(f"✅ Dataset created. Total: {len(new_df)} trades")
 
 if __name__ == "__main__":
     main()
