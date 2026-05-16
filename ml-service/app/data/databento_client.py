@@ -4,7 +4,7 @@ import pandas as pd
 from datetime import datetime
 
 # API Key: db-b6FgEtR4EgGNYYyyW8LWUnMEVkYuk
-DATABENTO_API_KEY = "db-b6FgEtR4EgGNYYyyW8LWUnMEVkYuk"
+DATABENTO_API_KEY = os.getenv("DATABENTO_API_KEY")
 
 def get_mbo_cache_path(symbol: str, date_str: str) -> str:
     """Helper to get cache path: data/raw/mbo/{symbol}/{date}.parquet"""

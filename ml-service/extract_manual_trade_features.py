@@ -7,7 +7,7 @@ from app.engine.orderbook import process_mbo_stream
 from app.engine.features import extract_l3_features
 
 # Configuration
-TRADES_FILE = "/Users/asal/Desktop/own/machine learning/my.trades.json"
+TRADES_FILE = "../my.trades.json"
 MBO_DIR = "data/raw/mbo/NQ"
 OUTPUT_FILE = "orderflow_ml/manual_trade_dataset.csv"
 WARMUP_WINDOW_MINUTES = 10  # Minutes of data to process before the first trade of the day (or per trade if session is too big)
