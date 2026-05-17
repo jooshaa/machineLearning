@@ -183,6 +183,7 @@ def backtest(features_df, impulses, mbo_df, filename):
     
     if not isinstance(features_df.index, pd.DatetimeIndex):
         features_df = features_df.set_index('ts')
+    features_df.index = pd.to_datetime(features_df.index, utc=True).tz_localize(None)
         
     # Simple heuristic for consolidations and aggression
     if not features_df.empty:
@@ -425,6 +426,24 @@ def main():
         os.makedirs("orderflow_ml", exist_ok=True)
         result_df.to_csv("orderflow_ml/volume_delta_dataset.csv", index=False)
         print(f"\n✅ Results exported to orderflow_ml/volume_delta_dataset.csv. Total signals: {len(result_df)}")
+        
+        # Print summary
+        total = len(result_df)
+        buys = len(result_df[result_df['direction'] == 'buy'])
+        sells = len(result_df[result_df['direction'] == 'sell'])
+        wins = len(result_df[result_df['outcome'] == 'win'])
+        losses = len(result_df[result_df['outcome'] == 'loss'])
+        timeouts = len(result_df[result_df['outcome'] == 'timeout'])
+        avg_r = result_df['r_multiple'].mean()
+        
+        print(f"\nFinal Summary:")
+        print(f"Total signals: {total}")
+        print(f"Buy signals: {buys}")
+        print(f"Sell signals: {sells}")
+        print(f"Win: {wins} ({wins/total*100:.1f}%)" if total > 0 else "Win: 0 (0%)")
+        print(f"Loss: {losses} ({losses/total*100:.1f}%)" if total > 0 else "Loss: 0 (0%)")
+        print(f"Timeout: {timeouts} ({timeouts/total*100:.1f}%)" if total > 0 else "Timeout: 0 (0%)")
+        print(f"Average R: {avg_r:.2f}" if total > 0 else "Average R: 0.00")
     else:
         print("\n❌ No signals generated across all files.")
 
