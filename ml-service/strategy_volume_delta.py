@@ -183,7 +183,7 @@ def backtest(features_df, impulses, mbo_df, filename):
     
     if not isinstance(features_df.index, pd.DatetimeIndex):
         features_df = features_df.set_index('ts')
-    features_df.index = pd.to_datetime(features_df.index, utc=True).tz_localize(None)
+    features_df.index = pd.to_datetime(features_df.index).tz_localize(None) if pd.to_datetime(features_df.index).tz is None else pd.to_datetime(features_df.index).tz_convert(None)
         
     # Simple heuristic for consolidations and aggression
     if not features_df.empty:
@@ -319,15 +319,20 @@ def backtest(features_df, impulses, mbo_df, filename):
                             hits_tp = post_signal[post_signal['price'] <= tp_price]
                             hits_sl = post_signal[post_signal['price'] >= sl_price]
                             
-                        t_tp = hits_tp.index[0] if not hits_tp.empty else pd.Timestamp('2100-01-01')
-                        t_sl = hits_sl.index[0] if not hits_sl.empty else pd.Timestamp('2100-01-01')
+                        sentinel = np.datetime64('2100-01-01')
+                        t_tp = hits_tp.index[0].to_datetime64() if not hits_tp.empty else sentinel
+                        t_sl = hits_sl.index[0].to_datetime64() if not hits_sl.empty else sentinel
                         
-                        if t_tp < t_sl and t_tp != pd.Timestamp('2100-01-01'):
+                        if t_tp < t_sl and t_tp != sentinel:
                             outcome = 'win'
                             result = '+2R'
                             r_multiple = 2.5 # 150 / 60
-                            bars_to_outcome = int((t_tp - entry_time).total_seconds() / 60)
-                        elif t_sl < t_tp and t_sl != pd.Timestamp('2100-01-01'):
+                            bars_to_outcome = int((t_tp - entry_time.to_datetime64()) / np.timedelta64(1, 'm'))
+                        elif t_sl < t_tp and t_sl != sentinel:
+                            outcome = 'loss'
+                            result = '-1R'
+                            r_multiple = -1.0
+                            bars_to_outcome = int((t_sl - entry_time.to_datetime64()) / np.timedelta64(1, 'm'))
                             outcome = 'loss'
                             result = '-1R'
                             r_multiple = -1.0
