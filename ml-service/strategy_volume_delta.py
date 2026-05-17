@@ -84,7 +84,7 @@ def find_impulses(df):
 
 def build_volume_profile(df, start_time, stop_time):
     """Builds volume and delta profile on impulse range."""
-    mask = (df.index >= start_time) & (df.index <= stop_time)
+    mask = (df.index.values >= np.datetime64(start_time)) & (df.index.values <= np.datetime64(stop_time))
     range_data = df[mask].copy()
     
     if range_data.empty:
@@ -119,7 +119,7 @@ def check_orderbook_state(mbo_df, target_price, touch_time, direction):
     tolerance = 2 * tick_size
     
     # Filter adds
-    adds = mbo_df[(mbo_df.index <= touch_time) & 
+    adds = mbo_df[(mbo_df.index.values <= np.datetime64(touch_time)) & 
                   (mbo_df['action'] == 'A') & 
                   (mbo_df['side'] == side) &
                   (abs(mbo_df['price'] - target_price) <= tolerance) &
@@ -135,10 +135,11 @@ def check_orderbook_state(mbo_df, target_price, touch_time, direction):
         order_id = add_row['order_id']
         t_add = add_row.name
         
-        subsequent = mbo_df[(mbo_df.index > t_add) & (mbo_df['order_id'] == order_id)]
+        t_add_np = np.datetime64(t_add)
+        subsequent = mbo_df[(mbo_df.index.values > t_add_np) & (mbo_df['order_id'] == order_id)]
         
         if subsequent.empty:
-            if touch_time - t_add >= pd.Timedelta(seconds=30):
+            if np.datetime64(touch_time) - t_add_np >= np.timedelta64(30, 's'):
                 real_orders_count += 1
                 order_prices.append(add_row['price'])
             continue
@@ -150,8 +151,8 @@ def check_orderbook_state(mbo_df, target_price, touch_time, direction):
         t_trade = trades.index[0] if not trades.empty else None
         
         if t_cancel is not None:
-            if t_cancel - t_add < pd.Timedelta(seconds=30):
-                if t_trade is None or t_trade > t_cancel:
+            if np.datetime64(t_cancel) - t_add_np < np.timedelta64(30, 's'):
+                if t_trade is None or np.datetime64(t_trade) > np.datetime64(t_cancel):
                     continue
                     
         real_orders_count += 1
@@ -240,24 +241,39 @@ def backtest(features_df, impulses, mbo_df, filename):
             returns_count += 1
             rejection_reason = "Confirmation criteria not met"
             
-            conf_window = post_impulse[(post_impulse.index > touch_time) & 
-                                       (post_impulse.index <= touch_time + timedelta(minutes=CONFIRMATION_WINDOW_MIN))]
+            touch_np = np.datetime64(touch_time)
+            conf_end = touch_np + np.timedelta64(CONFIRMATION_WINDOW_MIN, 'm')
+            conf_window = post_impulse[
+                (post_impulse.index.values > touch_np) & 
+                (post_impulse.index.values <= conf_end)
+            ]
             
             if conf_window.empty:
                 continue
                 
-            window_candles = candles[(candles.index > touch_time) & (candles.index <= touch_time + timedelta(minutes=CONFIRMATION_WINDOW_MIN))]
+            window_candles = candles[
+                (candles.index.values > touch_np) & 
+                (candles.index.values <= conf_end)
+            ]
             
             # Orderbook confirmation at touch (slice 5min window around touch time)
-            mbo_slice = mbo_df[(mbo_df.index >= touch_time - timedelta(minutes=5)) & 
-                               (mbo_df.index <= touch_time + timedelta(minutes=5))]
+            mbo_start = touch_np - np.timedelta64(5, 'm')
+            mbo_end = touch_np + np.timedelta64(5, 'm')
+            mbo_slice = mbo_df[
+                (mbo_df.index.values >= mbo_start) & 
+                (mbo_df.index.values <= mbo_end)
+            ]
             
             large_limit_present, layering = check_orderbook_state(mbo_slice, target_price, touch_time, imp_type)
             if large_limit_present:
                 ob_conf_count += 1
                 
             for c_ts, c_row in window_candles.iterrows():
-                c_trades = features_df[(features_df.index >= c_ts) & (features_df.index < c_ts + timedelta(minutes=5))]
+                c_ts_np = np.datetime64(c_ts)
+                c_trades = features_df[
+                    (features_df.index.values >= c_ts_np) & 
+                    (features_df.index.values < c_ts_np + np.timedelta64(5, 'm'))
+                ]
                 if c_trades.empty:
                     continue
                 poc = c_trades.groupby('price')['size'].sum().idxmax()
@@ -265,7 +281,8 @@ def backtest(features_df, impulses, mbo_df, filename):
                 close_price = c_row['close']
                 
                 # CVD confirmation
-                cvd_at_touch = conf_window.loc[conf_window.index <= c_ts, 'cvd'].iloc[-1] if not conf_window.loc[conf_window.index <= c_ts].empty else 0
+                cvd_slice = conf_window[conf_window.index.values <= c_ts_np]
+                cvd_at_touch = cvd_slice['cvd'].iloc[-1] if not cvd_slice.empty else 0
                 current_cvd = c_trades['cvd'].iloc[-1] if 'cvd' in c_trades.columns else 0
                 
                 cvd_confirmed = False
