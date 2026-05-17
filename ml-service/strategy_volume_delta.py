@@ -107,14 +107,73 @@ def find_delta_zones(profile):
     
     return {'buy': buy_zones, 'sell': sell_zones}
 
-def backtest(features_df, impulses):
+def check_orderbook_state(mbo_df, target_price, touch_time, direction):
+    """
+    Checks the orderbook state at touch_time for large limit orders and spoofing.
+    """
+    side = 'B' if direction == 'buy' else 'A'
+    tick_size = 0.25
+    tolerance = 2 * tick_size
+    
+    # Filter adds
+    adds = mbo_df[(mbo_df.index <= touch_time) & 
+                  (mbo_df['action'] == 'A') & 
+                  (mbo_df['side'] == side) &
+                  (abs(mbo_df['price'] - target_price) <= tolerance) &
+                  (mbo_df['size'] > 200)]
+                  
+    if adds.empty:
+        return False, False
+        
+    real_orders_count = 0
+    order_prices = []
+    
+    for _, add_row in adds.iterrows():
+        order_id = add_row['order_id']
+        t_add = add_row.name
+        
+        subsequent = mbo_df[(mbo_df.index > t_add) & (mbo_df['order_id'] == order_id)]
+        
+        if subsequent.empty:
+            if touch_time - t_add >= pd.Timedelta(seconds=30):
+                real_orders_count += 1
+                order_prices.append(add_row['price'])
+            continue
+            
+        cancels = subsequent[subsequent['action'] == 'C']
+        trades = subsequent[subsequent['action'] == 'T']
+        
+        t_cancel = cancels.index[0] if not cancels.empty else None
+        t_trade = trades.index[0] if not trades.empty else None
+        
+        if t_cancel is not None:
+            if t_cancel - t_add < pd.Timedelta(seconds=30):
+                if t_trade is None or t_trade > t_cancel:
+                    continue
+                    
+        real_orders_count += 1
+        order_prices.append(add_row['price'])
+        
+    layering = False
+    if len(order_prices) >= 2:
+        order_prices.sort()
+        for i in range(len(order_prices) - 1):
+            if order_prices[i+1] - order_prices[i] <= 5 * tick_size:
+                layering = True
+                break
+                
+    large_limit_present = real_orders_count > 0
+    
+    return large_limit_present, layering
+
+def backtest(features_df, impulses, mbo_df):
     """Backtests the strategy on detected impulses."""
     signals = []
     
     if not isinstance(features_df.index, pd.DatetimeIndex):
         features_df = features_df.set_index('ts')
         
-    candles = features_df['price'].resample('1min').ohlc()
+    candles = features_df['price'].resample('5min').ohlc()
     
     for imp in impulses:
         start_time = imp['start']
@@ -156,14 +215,18 @@ def backtest(features_df, impulses):
                 
             window_candles = candles[(candles.index > touch_time) & (candles.index <= touch_time + timedelta(minutes=CONFIRMATION_WINDOW_MIN))]
             
+            # Orderbook confirmation at touch
+            large_limit_present, layering = check_orderbook_state(mbo_df, target_price, touch_time, imp_type)
+            
             for c_ts, c_row in window_candles.iterrows():
-                c_trades = features_df[(features_df.index >= c_ts) & (features_df.index < c_ts + timedelta(minutes=1))]
+                c_trades = features_df[(features_df.index >= c_ts) & (features_df.index < c_ts + timedelta(minutes=5))]
                 if c_trades.empty:
                     continue
                 poc = c_trades.groupby('price')['size'].sum().idxmax()
                 
                 close_price = c_row['close']
                 
+                # CVD confirmation
                 cvd_at_touch = conf_window.loc[conf_window.index <= c_ts, 'cvd'].iloc[-1] if not conf_window.loc[conf_window.index <= c_ts].empty else 0
                 current_cvd = c_trades['cvd'].iloc[-1] if 'cvd' in c_trades.columns else 0
                 
@@ -173,28 +236,34 @@ def backtest(features_df, impulses):
                 elif imp_type == 'down' and current_cvd < cvd_at_touch:
                     cvd_confirmed = True
                     
-                if imp_type == 'up' and close_price > poc and cvd_confirmed:
+                # POC confirmation
+                poc_confirmed = False
+                if imp_type == 'up' and close_price > poc:
+                    poc_confirmed = True
+                elif imp_type == 'down' and close_price < poc:
+                    poc_confirmed = True
+                    
+                # Scoring
+                score = 0
+                if poc_confirmed:
+                    score += 1
+                if large_limit_present:
+                    score += 1
+                if cvd_confirmed:
+                    score += 1
+                    
+                if score >= 2:
                     signals.append({
                         'ts': c_ts,
                         'type': 'delta_zone_return',
-                        'direction': 'buy',
+                        'direction': 'buy' if imp_type == 'up' else 'sell',
                         'entry': close_price,
-                        'stop': target_price - SL_POINTS,
-                        'target': close_price + TP_POINTS,
+                        'stop': target_price - SL_POINTS if imp_type == 'up' else target_price + SL_POINTS,
+                        'target': close_price + TP_POINTS if imp_type == 'up' else close_price - TP_POINTS,
                         'impulse_start': start_time,
-                        'impulse_stop': stop_time
-                    })
-                    break
-                elif imp_type == 'down' and close_price < poc and cvd_confirmed:
-                    signals.append({
-                        'ts': c_ts,
-                        'type': 'delta_zone_return',
-                        'direction': 'sell',
-                        'entry': close_price,
-                        'stop': target_price + SL_POINTS,
-                        'target': close_price - TP_POINTS,
-                        'impulse_start': start_time,
-                        'impulse_stop': stop_time
+                        'impulse_stop': stop_time,
+                        'score': score,
+                        'layering': layering
                     })
                     break
                     
@@ -240,7 +309,7 @@ def main():
             
             print("Running strategy...")
             impulses = find_impulses(features)
-            signals = backtest(features, impulses)
+            signals = backtest(features, impulses, mbo_df)
             
             if not signals.empty:
                 all_signals.append(signals)
@@ -286,6 +355,33 @@ def create_mock_data():
     # Add some large delta in the impulse range
     df.loc[df.index[3000:3500], 'size'] = 500
     df.loc[df.index[3000:3500], 'side'] = 'A'
+    
+    # Add some large limit orders (Add) to simulate support
+    touch_price = df.iloc[6000]['price']
+    
+    df.loc[df.index[5500], 'action'] = 'A'
+    df.loc[df.index[5500], 'size'] = 250
+    df.loc[df.index[5500], 'price'] = touch_price
+    df.loc[df.index[5500], 'side'] = 'B'
+    df.loc[df.index[5500], 'order_id'] = 9999
+    
+    df.loc[df.index[5505], 'action'] = 'A'
+    df.loc[df.index[5505], 'size'] = 210
+    df.loc[df.index[5505], 'price'] = touch_price - 0.25
+    df.loc[df.index[5505], 'side'] = 'B'
+    df.loc[df.index[5505], 'order_id'] = 9998
+    
+    df.loc[df.index[5600], 'action'] = 'A'
+    df.loc[df.index[5600], 'size'] = 300
+    df.loc[df.index[5600], 'price'] = touch_price + 0.5
+    df.loc[df.index[5600], 'side'] = 'B'
+    df.loc[df.index[5600], 'order_id'] = 9997
+    
+    df.loc[df.index[5610], 'action'] = 'C'
+    df.loc[df.index[5610], 'size'] = 300
+    df.loc[df.index[5610], 'price'] = touch_price + 0.5
+    df.loc[df.index[5610], 'side'] = 'B'
+    df.loc[df.index[5610], 'order_id'] = 9997
     
     df.to_parquet(path)
     print(f"Mock data saved to {path}")
