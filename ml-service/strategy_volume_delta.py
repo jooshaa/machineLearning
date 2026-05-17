@@ -10,10 +10,12 @@ from app.engine.features import extract_l3_features
 # Parameters
 IMPULSE_MIN_POINTS = 100      # minimum NQ points for valid impulse
 IMPULSE_MAX_DURATION_MIN = 120
-MIN_DELTA_CONTRACTS = 250     # minimum contracts for large delta zone
+MIN_DELTA_CONTRACTS = 30      # lowered from 250
 TP_POINTS = 150               # take profit in NQ points  
 SL_POINTS = 60                # stop loss in NQ points
 CONFIRMATION_WINDOW_MIN = 30  # wait for confirmation within 30 min of zone touch
+CONSOLIDATION_RANGE = 50       # max range for consolidation
+AGGRESSION_MIN_CONTRACTS = 20 # min contracts for aggression
 
 def find_impulses(df):
     """
@@ -166,15 +168,36 @@ def check_orderbook_state(mbo_df, target_price, touch_time, direction):
     
     return large_limit_present, layering
 
-def backtest(features_df, impulses, mbo_df):
+def backtest(features_df, impulses, mbo_df, filename):
     """Backtests the strategy on detected impulses."""
     signals = []
+    
+    consolidations_count = 0
+    aggression_count = 0
+    delta_zones_count = 0
+    returns_count = 0
+    poc_conf_count = 0
+    ob_conf_count = 0
+    rejection_reason = "No impulses found"
     
     if not isinstance(features_df.index, pd.DatetimeIndex):
         features_df = features_df.set_index('ts')
         
+    # Simple heuristic for consolidations and aggression
+    if not features_df.empty:
+        candles_5m = features_df['price'].resample('5min').ohlc()
+        consolidations = candles_5m[(candles_5m['high'] - candles_5m['low']) <= CONSOLIDATION_RANGE]
+        consolidations_count = len(consolidations)
+        
+        aggression_count = len(features_df[features_df['size'] > AGGRESSION_MIN_CONTRACTS])
+        
     candles = features_df['price'].resample('5min').ohlc()
     
+    if not impulses:
+        rejection_reason = "No impulses found"
+    else:
+        rejection_reason = "No delta zones found"
+        
     for imp in impulses:
         start_time = imp['start']
         stop_time = imp['stop']
@@ -184,9 +207,13 @@ def backtest(features_df, impulses, mbo_df):
         zones = find_delta_zones(profile)
         
         target_zones = zones['buy'] if imp_type == 'up' else zones['sell']
+        delta_zones_count += len(target_zones)
+        
         if not target_zones:
             continue
             
+        rejection_reason = "No price returns to zone"
+        
         post_impulse = features_df[features_df.index > stop_time]
         if post_impulse.empty:
             continue
@@ -207,6 +234,9 @@ def backtest(features_df, impulses, mbo_df):
                 break
                 
         if touched:
+            returns_count += 1
+            rejection_reason = "Confirmation criteria not met"
+            
             conf_window = post_impulse[(post_impulse.index > touch_time) & 
                                        (post_impulse.index <= touch_time + timedelta(minutes=CONFIRMATION_WINDOW_MIN))]
             
@@ -217,7 +247,9 @@ def backtest(features_df, impulses, mbo_df):
             
             # Orderbook confirmation at touch
             large_limit_present, layering = check_orderbook_state(mbo_df, target_price, touch_time, imp_type)
-            
+            if large_limit_present:
+                ob_conf_count += 1
+                
             for c_ts, c_row in window_candles.iterrows():
                 c_trades = features_df[(features_df.index >= c_ts) & (features_df.index < c_ts + timedelta(minutes=5))]
                 if c_trades.empty:
@@ -240,8 +272,10 @@ def backtest(features_df, impulses, mbo_df):
                 poc_confirmed = False
                 if imp_type == 'up' and close_price > poc:
                     poc_confirmed = True
+                    poc_conf_count += 1
                 elif imp_type == 'down' and close_price < poc:
                     poc_confirmed = True
+                    poc_conf_count += 1
                     
                 # Scoring
                 score = 0
@@ -252,7 +286,7 @@ def backtest(features_df, impulses, mbo_df):
                 if cvd_confirmed:
                     score += 1
                     
-                if score >= 2:
+                if score >= 1: # Lowered threshold
                     signals.append({
                         'ts': c_ts,
                         'type': 'delta_zone_return',
@@ -266,6 +300,22 @@ def backtest(features_df, impulses, mbo_df):
                         'layering': layering
                     })
                     break
+                    
+    # Print step-by-step debug for the day
+    date_str = filename.replace(".parquet", "")
+    print(f"Day {date_str}:")
+    print(f"  - Consolidations found: {consolidations_count}")
+    print(f"  - Aggression breakouts: {aggression_count}")
+    print(f"  - Valid impulses: {len(impulses)}")
+    print(f"  - Delta zones found: {delta_zones_count}")
+    print(f"  - Price returns to zone: {returns_count}")
+    print(f"  - POC confirmations: {poc_conf_count}")
+    print(f"  - Orderbook confirmations: {ob_conf_count}")
+    print(f"  - Final signals: {len(signals)}")
+    if not signals:
+        print(f"  - Rejection reason: \"{rejection_reason}\"")
+        
+    return pd.DataFrame(signals)
                     
     return pd.DataFrame(signals)
 
@@ -294,8 +344,15 @@ def main():
             if mbo_df.empty:
                 continue
                 
-            if mbo_df['price'].max() > 1000000:
+            median_price = mbo_df['price'].median()
+            print(f"Raw median price: {median_price}")
+            
+            if median_price > 1e8:
                 mbo_df['price'] = mbo_df['price'] / 1e9
+                print("Auto-detected scale: divided by 1e9")
+            elif median_price > 1e5:
+                mbo_df['price'] = mbo_df['price'] / 1e4
+                print("Auto-detected scale: divided by 1e4")
                 
             print("Building order book and extracting trade events...")
             events = process_mbo_stream(mbo_df)
@@ -309,7 +366,7 @@ def main():
             
             print("Running strategy...")
             impulses = find_impulses(features)
-            signals = backtest(features, impulses, mbo_df)
+            signals = backtest(features, impulses, mbo_df, filename)
             
             if not signals.empty:
                 all_signals.append(signals)
