@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
+import gc
 
 # Import existing infrastructure
 from app.engine.orderbook import process_mbo_stream
@@ -245,8 +246,11 @@ def backtest(features_df, impulses, mbo_df, filename):
                 
             window_candles = candles[(candles.index > touch_time) & (candles.index <= touch_time + timedelta(minutes=CONFIRMATION_WINDOW_MIN))]
             
-            # Orderbook confirmation at touch
-            large_limit_present, layering = check_orderbook_state(mbo_df, target_price, touch_time, imp_type)
+            # Orderbook confirmation at touch (slice 5min window around touch time)
+            mbo_slice = mbo_df[(mbo_df.index >= touch_time - timedelta(minutes=5)) & 
+                               (mbo_df.index <= touch_time + timedelta(minutes=5))]
+            
+            large_limit_present, layering = check_orderbook_state(mbo_slice, target_price, touch_time, imp_type)
             if large_limit_present:
                 ob_conf_count += 1
                 
@@ -354,19 +358,14 @@ def main():
                 mbo_df['price'] = mbo_df['price'] / 1e4
                 print("Auto-detected scale: divided by 1e4")
                 
-            print("Building order book and extracting trade events...")
-            events = process_mbo_stream(mbo_df)
-            if not events:
-                print("No events generated.")
-                continue
-            events_df = pd.DataFrame(events)
+            # Filter immediately for trades
+            trades_only = mbo_df[mbo_df['action'] == 'T'].copy()
+            trades_only['delta'] = np.where(trades_only['side'] == 'A', trades_only['size'], -trades_only['size'])
+            trades_only['cvd'] = trades_only['delta'].cumsum()
             
-            print("Extracting features...")
-            features = extract_l3_features(mbo_df, events_df)
-            
-            print("Running strategy...")
-            impulses = find_impulses(features)
-            signals = backtest(features, impulses, mbo_df, filename)
+            print("Running strategy on trades only...")
+            impulses = find_impulses(trades_only)
+            signals = backtest(trades_only, impulses, mbo_df, filename)
             
             if not signals.empty:
                 all_signals.append(signals)
@@ -374,6 +373,12 @@ def main():
                 
         except Exception as e:
             print(f"Error processing {filename}: {e}")
+        finally:
+            if 'mbo_df' in locals():
+                del mbo_df
+            if 'trades_only' in locals():
+                del trades_only
+            gc.collect()
             
     if all_signals:
         result_df = pd.concat(all_signals, ignore_index=True)
