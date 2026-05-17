@@ -291,17 +291,57 @@ def backtest(features_df, impulses, mbo_df, filename):
                     score += 1
                     
                 if score >= 1: # Lowered threshold
+                    # Outcome calculation (Look forward 4 hours)
+                    post_signal = features_df[features_df.index > c_ts]
+                    post_signal = post_signal[post_signal.index <= c_ts + timedelta(hours=4)]
+                    
+                    entry_price = close_price
+                    tp_price = entry_price + 150 if imp_type == 'up' else entry_price - 150
+                    sl_price = entry_price - 60 if imp_type == 'up' else entry_price + 60
+                    
+                    outcome = 'timeout'
+                    result = '0R'
+                    r_multiple = 0.0
+                    bars_to_outcome = 0
+                    
+                    if not post_signal.empty:
+                        if imp_type == 'up':
+                            hits_tp = post_signal[post_signal['price'] >= tp_price]
+                            hits_sl = post_signal[post_signal['price'] <= sl_price]
+                        else:
+                            hits_tp = post_signal[post_signal['price'] <= tp_price]
+                            hits_sl = post_signal[post_signal['price'] >= sl_price]
+                            
+                        t_tp = hits_tp.index[0] if not hits_tp.empty else pd.Timestamp.max
+                        t_sl = hits_sl.index[0] if not hits_sl.empty else pd.Timestamp.max
+                        
+                        if t_tp < t_sl and t_tp != pd.Timestamp.max:
+                            outcome = 'win'
+                            result = '+2R'
+                            r_multiple = 2.5 # 150 / 60
+                            bars_to_outcome = int((t_tp - c_ts).total_seconds() / 60)
+                        elif t_sl < t_tp and t_sl != pd.Timestamp.max:
+                            outcome = 'loss'
+                            result = '-1R'
+                            r_multiple = -1.0
+                            bars_to_outcome = int((t_sl - c_ts).total_seconds() / 60)
+                        else:
+                            outcome = 'timeout'
+                            result = '0R'
+                            r_multiple = 0.0
+                            bars_to_outcome = len(post_signal) # fallback to rows if timeout
+                            
                     signals.append({
-                        'ts': c_ts,
-                        'type': 'delta_zone_return',
+                        'entry_time': c_ts,
                         'direction': 'buy' if imp_type == 'up' else 'sell',
-                        'entry': close_price,
-                        'stop': target_price - SL_POINTS if imp_type == 'up' else target_price + SL_POINTS,
-                        'target': close_price + TP_POINTS if imp_type == 'up' else close_price - TP_POINTS,
-                        'impulse_start': start_time,
-                        'impulse_stop': stop_time,
                         'score': score,
-                        'layering': layering
+                        'entry_price': entry_price,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price,
+                        'outcome': outcome,
+                        'result': result,
+                        'r_multiple': r_multiple,
+                        'bars_to_outcome': bars_to_outcome
                     })
                     break
                     
@@ -398,10 +438,14 @@ def create_mock_data():
     
     prices = [15000.0]
     for i in range(1, len(dates)):
-        if 2000 < i < 4000:
-            prices.append(prices[-1] + np.random.uniform(0, 0.25)) # Upward impulse
-        elif 6000 < i < 8000:
-            prices.append(prices[-1] - np.random.uniform(0, 0.25)) # Downward return
+        if 2000 < i < 3000:
+            prices.append(prices[-1] + np.random.uniform(0, 0.5)) # Upward impulse
+        elif 4000 < i < 5000:
+            prices.append(prices[-1] - np.random.uniform(0, 0.5)) # Return DOWN to buy zone
+        elif 6000 < i < 7000:
+            prices.append(prices[-1] - np.random.uniform(0, 0.5)) # Downward impulse
+        elif 8000 < i < 9000:
+            prices.append(prices[-1] + np.random.uniform(0, 0.5)) # Return UP to sell zone
         else:
             prices.append(prices[-1] + np.random.uniform(-0.25, 0.25))
             
@@ -414,9 +458,13 @@ def create_mock_data():
         'symbol': 'NQ.FUT'
     }, index=dates)
     
-    # Add some large delta in the impulse range
-    df.loc[df.index[3000:3500], 'size'] = 500
-    df.loc[df.index[3000:3500], 'side'] = 'A'
+    # Add large delta for buy zone in upward impulse
+    df.loc[df.index[2500:2700], 'size'] = 500
+    df.loc[df.index[2500:2700], 'side'] = 'A'
+    
+    # Add large delta for sell zone in downward impulse
+    df.loc[df.index[6500:6700], 'size'] = 500
+    df.loc[df.index[6500:6700], 'side'] = 'B'
     
     # Add some large limit orders (Add) to simulate support
     touch_price = df.iloc[6000]['price']
