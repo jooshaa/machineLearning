@@ -216,7 +216,8 @@ def backtest(features_df, impulses, mbo_df, filename):
             
         rejection_reason = "No price returns to zone"
         
-        post_impulse = features_df[features_df.index > stop_time]
+        stop_time_np = np.datetime64(stop_time)
+        post_impulse = features_df[features_df.index.values > stop_time_np]
         if post_impulse.empty:
             continue
             
@@ -293,55 +294,45 @@ def backtest(features_df, impulses, mbo_df, filename):
                     
                 if score >= 1: # Lowered threshold
                     # Outcome calculation (Look forward 4 hours)
-                    entry_time = pd.Timestamp(c_ts)
-                    if hasattr(entry_time, 'tz') and entry_time.tz is not None:
-                        entry_time = entry_time.tz_localize(None)
-                        
-                    end_time = entry_time + pd.Timedelta(hours=4)
-                    
-                    post_signal = features_df[(features_df.index > entry_time) & 
-                                              (features_df.index <= end_time)]
-                    
+                    entry_time = np.datetime64(c_ts)
+                    end_time = entry_time + np.timedelta64(4, 'h')
+
+                    post_signal = features_df[
+                        (features_df.index.values > entry_time) & 
+                        (features_df.index.values <= end_time)
+                    ]
+
                     entry_price = close_price
                     tp_price = entry_price + 150 if imp_type == 'up' else entry_price - 150
                     sl_price = entry_price - 60 if imp_type == 'up' else entry_price + 60
-                    
+
                     outcome = 'timeout'
                     result = '0R'
                     r_multiple = 0.0
                     bars_to_outcome = 0
-                    
+
                     if not post_signal.empty:
                         if imp_type == 'up':
-                            hits_tp = post_signal[post_signal['price'] >= tp_price]
-                            hits_sl = post_signal[post_signal['price'] <= sl_price]
+                            hits_tp = post_signal[post_signal['price'].values >= tp_price]
+                            hits_sl = post_signal[post_signal['price'].values <= sl_price]
                         else:
-                            hits_tp = post_signal[post_signal['price'] <= tp_price]
-                            hits_sl = post_signal[post_signal['price'] >= sl_price]
-                            
+                            hits_tp = post_signal[post_signal['price'].values <= tp_price]
+                            hits_sl = post_signal[post_signal['price'].values >= sl_price]
+
                         sentinel = np.datetime64('2100-01-01')
-                        t_tp = hits_tp.index[0].to_datetime64() if not hits_tp.empty else sentinel
-                        t_sl = hits_sl.index[0].to_datetime64() if not hits_sl.empty else sentinel
-                        
+                        t_tp = hits_tp.index.values[0] if not hits_tp.empty else sentinel
+                        t_sl = hits_sl.index.values[0] if not hits_sl.empty else sentinel
+
                         if t_tp < t_sl and t_tp != sentinel:
                             outcome = 'win'
                             result = '+2R'
-                            r_multiple = 2.5 # 150 / 60
-                            bars_to_outcome = int((t_tp - entry_time.to_datetime64()) / np.timedelta64(1, 'm'))
+                            r_multiple = 2.5
+                            bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
                         elif t_sl < t_tp and t_sl != sentinel:
                             outcome = 'loss'
                             result = '-1R'
                             r_multiple = -1.0
-                            bars_to_outcome = int((t_sl - entry_time.to_datetime64()) / np.timedelta64(1, 'm'))
-                            outcome = 'loss'
-                            result = '-1R'
-                            r_multiple = -1.0
-                            bars_to_outcome = int((t_sl - entry_time).total_seconds() / 60)
-                        else:
-                            outcome = 'timeout'
-                            result = '0R'
-                            r_multiple = 0.0
-                            bars_to_outcome = len(post_signal) # fallback to rows if timeout
+                            bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
                             
                     signals.append({
                         'entry_time': c_ts,
