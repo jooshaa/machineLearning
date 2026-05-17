@@ -293,8 +293,14 @@ def backtest(features_df, impulses, mbo_df, filename):
                     
                 if score >= 1: # Lowered threshold
                     # Outcome calculation (Look forward 4 hours)
-                    post_signal = features_df[features_df.index > c_ts]
-                    post_signal = post_signal[post_signal.index <= c_ts + timedelta(hours=4)]
+                    entry_time = pd.Timestamp(c_ts)
+                    if hasattr(entry_time, 'tz') and entry_time.tz is not None:
+                        entry_time = entry_time.tz_localize(None)
+                        
+                    end_time = entry_time + pd.Timedelta(hours=4)
+                    
+                    post_signal = features_df[(features_df.index > entry_time) & 
+                                              (features_df.index <= end_time)]
                     
                     entry_price = close_price
                     tp_price = entry_price + 150 if imp_type == 'up' else entry_price - 150
@@ -313,19 +319,19 @@ def backtest(features_df, impulses, mbo_df, filename):
                             hits_tp = post_signal[post_signal['price'] <= tp_price]
                             hits_sl = post_signal[post_signal['price'] >= sl_price]
                             
-                        t_tp = hits_tp.index[0] if not hits_tp.empty else pd.Timestamp.max
-                        t_sl = hits_sl.index[0] if not hits_sl.empty else pd.Timestamp.max
+                        t_tp = hits_tp.index[0] if not hits_tp.empty else pd.Timestamp('2100-01-01')
+                        t_sl = hits_sl.index[0] if not hits_sl.empty else pd.Timestamp('2100-01-01')
                         
-                        if t_tp < t_sl and t_tp != pd.Timestamp.max:
+                        if t_tp < t_sl and t_tp != pd.Timestamp('2100-01-01'):
                             outcome = 'win'
                             result = '+2R'
                             r_multiple = 2.5 # 150 / 60
-                            bars_to_outcome = int((t_tp - c_ts).total_seconds() / 60)
-                        elif t_sl < t_tp and t_sl != pd.Timestamp.max:
+                            bars_to_outcome = int((t_tp - entry_time).total_seconds() / 60)
+                        elif t_sl < t_tp and t_sl != pd.Timestamp('2100-01-01'):
                             outcome = 'loss'
                             result = '-1R'
                             r_multiple = -1.0
-                            bars_to_outcome = int((t_sl - c_ts).total_seconds() / 60)
+                            bars_to_outcome = int((t_sl - entry_time).total_seconds() / 60)
                         else:
                             outcome = 'timeout'
                             result = '0R'
