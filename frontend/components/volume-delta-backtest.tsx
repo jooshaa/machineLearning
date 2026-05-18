@@ -83,7 +83,12 @@ export function VolumeDeltaBacktest() {
       wickDownColor: '#ef4444',
     });
 
+    const entryTime = new Date(selectedSignal.entry_time).getTime() / 1000;
     const chartData = candles
+      .filter(c => {
+        const t = new Date(c.timestamp as string).getTime() / 1000;
+        return t >= entryTime - 4 * 3600 && t <= entryTime + 4 * 3600;
+      })
       .filter(c => c.open && c.high && c.low && c.close)
       .map(c => ({
         time: (new Date(c.timestamp as string).getTime() / 1000) as Time,
