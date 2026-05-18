@@ -2,6 +2,7 @@
 
 import { ReactNode, useState } from 'react';
 import { FabioBacktest } from './fabio-backtest';
+import { VolumeDeltaBacktest } from './volume-delta-backtest';
 
 export function BacktestTabs({
   simpleContent,
@@ -10,7 +11,7 @@ export function BacktestTabs({
   simpleContent: ReactNode;
   advancedContent: ReactNode;
 }) {
-  const [tab, setTab] = useState<'fabio' | 'advanced' | 'simple'>('fabio');
+  const [tab, setTab] = useState<'fabio' | 'advanced' | 'simple' | 'volume-delta'>('fabio');
 
   return (
     <div>
@@ -48,10 +49,22 @@ export function BacktestTabs({
         >
           📊 Simple (Rule-based)
         </button>
+        <button
+          type="button"
+          onClick={() => setTab('volume-delta')}
+          className={`whitespace-nowrap rounded-full px-5 py-2 text-sm font-medium transition ${
+            tab === 'volume-delta'
+              ? 'bg-ink text-white shadow-md'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+          }`}
+        >
+          🌊 Volume Delta
+        </button>
       </div>
       {tab === 'fabio' && <FabioBacktest />}
       {tab === 'advanced' && advancedContent}
       {tab === 'simple' && simpleContent}
+      {tab === 'volume-delta' && <VolumeDeltaBacktest />}
     </div>
   );
 }

@@ -463,8 +463,10 @@ def main():
         print(f"Loss: {losses} ({losses/total*100:.1f}%)" if total > 0 else "Loss: 0 (0%)")
         print(f"Timeout: {timeouts} ({timeouts/total*100:.1f}%)" if total > 0 else "Timeout: 0 (0%)")
         print(f"Average R: {avg_r:.2f}" if total > 0 else "Average R: 0.00")
+        return result_df
     else:
         print("\n❌ No signals generated across all files.")
+        return pd.DataFrame()
 
 def create_mock_data():
     """Creates a mock dataset that resembles Databento MBO data."""

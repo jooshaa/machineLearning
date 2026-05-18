@@ -301,6 +301,20 @@ export class BacktestsService {
     return response.json();
   }
 
+  async runVolumeDeltaBacktest() {
+    const response = await fetch(`${this.mlServiceUrl}/backtest-volume-delta`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'ML service unreachable' }));
+      throw new BadRequestException(error.detail ?? 'Volume Delta backtest failed');
+    }
+
+    return response.json();
+  }
+
   async runFabioL3Backtest(dto: Record<string, unknown>) {
     const response = await fetch(`${this.mlServiceUrl}/backtest-l3`, {
       method: 'POST',

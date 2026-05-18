@@ -144,6 +144,12 @@ export function runFabioBacktest(payload: Record<string, unknown>) {
   });
 }
 
+export function runVolumeDeltaBacktest() {
+  return fetchJson<any>('/backtests/volume-delta', {
+    method: 'POST',
+  });
+}
+
 export function saveFabioResult(payload: Record<string, unknown>) {
   return fetchJson<Record<string, unknown>>('/backtests/fabio/save', {
     method: 'POST',

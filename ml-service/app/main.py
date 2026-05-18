@@ -35,6 +35,8 @@ from app.engine.jobs import job_manager
 from fastapi import BackgroundTasks
 import time
 from app.engine.orderflow_backtester import run_l3_backtest
+import strategy_volume_delta
+
 
 app = FastAPI(title="Trading Journal ML Service", version="1.0.0")
 
@@ -738,6 +740,28 @@ def api_backtest_fabio(request: FabioBacktestRequest):
         return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Fabio backtest failed: {str(exc)}")
+
+@app.post("/backtest-volume-delta")
+async def backtest_volume_delta():
+    try:
+        result_df = strategy_volume_delta.main()
+        
+        if result_df.empty:
+            return {"signals": [], "summary": {"total": 0}}
+            
+        signals = result_df.to_dict(orient='records')
+        
+        summary = {
+            "total": len(result_df),
+            "wins": len(result_df[result_df['outcome'] == 'win']),
+            "losses": len(result_df[result_df['outcome'] == 'loss']),
+            "timeouts": len(result_df[result_df['outcome'] == 'timeout']),
+            "avg_r": float(result_df['r_multiple'].mean()) if not result_df.empty else 0.0,
+        }
+        
+        return {"signals": signals, "summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Volume Delta Backtest failed: {str(e)}")
 
 # ---------------------------------------------------------------------------
 # Level 3 (MBO) Order Flow Data Pipeline Endpoints

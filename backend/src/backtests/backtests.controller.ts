@@ -27,6 +27,11 @@ export class BacktestsController {
     return this.backtestsService.runFabioBacktest(dto);
   }
 
+  @Post('volume-delta')
+  async runVolumeDelta() {
+    return this.backtestsService.runVolumeDeltaBacktest();
+  }
+
   @Post('fabio/l3')
   async runFabioL3(@Body() dto: Record<string, unknown>) {
     return this.backtestsService.runFabioL3Backtest(dto);

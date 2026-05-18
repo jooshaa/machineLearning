@@ -84,7 +84,7 @@ export function FabioBacktest() {
                   allCandles.push(...(res.candles || []));
                 } catch {}
               }
-              allCandles.sort((a, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+              allCandles.sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
               setCandles(allCandles);
               console.log("Multi-day candles loaded:", allCandles.length);
             } catch (e) {
@@ -469,7 +469,7 @@ export function FabioBacktest() {
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <span className="text-sm font-medium text-ink">Strict Statistical Validation</span>
-                <span className="text-[10px] text-slate-500">Only trade segments passing T-Stat > 2.5 and Train/Test check</span>
+                <span className="text-[10px] text-slate-500">Only trade segments passing T-Stat &gt; 2.5 and Train/Test check</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={useValidation} onChange={e => setUseValidation(e.target.checked)} />
