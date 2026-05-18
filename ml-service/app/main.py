@@ -786,6 +786,11 @@ async def get_candles(date: str):
         elif median_price > 1e5:
             trades['price'] = trades['price'] / 1e4
             
+        # Filter outliers before building candles
+        q01 = trades['price'].quantile(0.001)
+        q999 = trades['price'].quantile(0.999)
+        trades = trades[(trades['price'] >= q01) & (trades['price'] <= q999)]
+            
         # Ensure datetime index
         if not isinstance(trades.index, pd.DatetimeIndex):
             trades.index = pd.to_datetime(trades.index)
