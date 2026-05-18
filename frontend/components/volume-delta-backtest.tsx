@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { runVolumeDeltaBacktest, fetchLocalCandles } from '@/lib/api';
 import { createChart, CandlestickSeries, createSeriesMarkers, Time, SeriesMarker, ColorType } from 'lightweight-charts';
 
+const TIMEFRAMES = ['1m', '5m', '15m', '1H'] as const;
+type Timeframe = typeof TIMEFRAMES[number];
 
 export function VolumeDeltaBacktest() {
   const [loading, setLoading] = useState(false);
@@ -12,10 +14,10 @@ export function VolumeDeltaBacktest() {
   const [selectedSignal, setSelectedSignal] = useState<any>(null);
   const [candles, setCandles] = useState<any[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
-  
+  const [timeframe, setTimeframe] = useState<Timeframe>('5m');
+
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
-
 
   const handleRun = async () => {
     setLoading(true);
@@ -32,14 +34,15 @@ export function VolumeDeltaBacktest() {
     }
   };
 
+  // Fetch full-day candles whenever signal or timeframe changes
   useEffect(() => {
     async function loadCandles() {
       if (!selectedSignal) return;
-      
+
       setChartLoading(true);
       try {
         const date = selectedSignal.entry_time.substring(0, 10);
-        const res = await fetchLocalCandles(date);
+        const res = await fetchLocalCandles(date, timeframe);
         setCandles(res.candles);
       } catch (e) {
         console.error('Failed to fetch candles', e);
@@ -48,8 +51,9 @@ export function VolumeDeltaBacktest() {
       }
     }
     loadCandles();
-  }, [selectedSignal]);
+  }, [selectedSignal, timeframe]);
 
+  // Build chart when candles or signal change
   useEffect(() => {
     if (!chartContainerRef.current || candles.length === 0 || !selectedSignal) return;
 
@@ -60,7 +64,7 @@ export function VolumeDeltaBacktest() {
 
     const chart = createChart(chartContainerRef.current, {
       width: chartContainerRef.current.clientWidth,
-      height: 400,
+      height: 420,
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
         textColor: '#64748b',
@@ -83,12 +87,8 @@ export function VolumeDeltaBacktest() {
       wickDownColor: '#ef4444',
     });
 
-    const entryTime = new Date(selectedSignal.entry_time).getTime() / 1000;
+    // Show full trading day — no time window filter
     const chartData = candles
-      .filter(c => {
-        const t = new Date(c.timestamp as string).getTime() / 1000;
-        return t >= entryTime - 4 * 3600 && t <= entryTime + 4 * 3600;
-      })
       .filter(c => c.open && c.high && c.low && c.close)
       .map(c => ({
         time: (new Date(c.timestamp as string).getTime() / 1000) as Time,
@@ -96,37 +96,38 @@ export function VolumeDeltaBacktest() {
         high: c.high as number,
         low: c.low as number,
         close: c.close as number,
-      })).sort((a, b) => (a.time as number) - (b.time as number));
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number));
 
     candlestickSeries.setData(chartData);
 
-    // Add Marker
-    const tradeTime = (new Date(selectedSignal.entry_time).getTime() / 1000) as Time;
-    
-    // Find closest candle time to avoid offset issues
+    // Find the candle closest to entry time for marker placement
+    const tradeTime = new Date(selectedSignal.entry_time).getTime() / 1000;
     let closestCandleTime = chartData[0]?.time as number;
     for (let i = chartData.length - 1; i >= 0; i--) {
-      if ((chartData[i].time as number) <= (tradeTime as number)) {
+      if ((chartData[i].time as number) <= tradeTime) {
         closestCandleTime = chartData[i].time as number;
         break;
       }
     }
 
-    let color = '#eab308'; // Default timeout yellow
-    if (selectedSignal.outcome === 'win') color = '#10b981';
-    if (selectedSignal.outcome === 'loss') color = '#ef4444';
+    // Outcome colour: green = win, red = loss, yellow = timeout
+    let markerColor = '#eab308';
+    if (selectedSignal.outcome === 'win') markerColor = '#10b981';
+    if (selectedSignal.outcome === 'loss') markerColor = '#ef4444';
 
     createSeriesMarkers(candlestickSeries, [
       {
         time: closestCandleTime as Time,
         position: selectedSignal.direction === 'buy' ? 'belowBar' : 'aboveBar',
-        color: color,
+        color: markerColor,
         shape: selectedSignal.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: selectedSignal.outcome.toUpperCase(),
-      } as SeriesMarker<Time>
+        text: `${selectedSignal.direction.toUpperCase()} — ${selectedSignal.outcome.toUpperCase()}`,
+      } as SeriesMarker<Time>,
     ]);
 
-    // Add Price Lines
+    // Fix 1: Use sl_price and tp_price directly from signal — they are already correct
+    // TP — green dashed line
     candlestickSeries.createPriceLine({
       price: selectedSignal.tp_price,
       color: '#10b981',
@@ -136,6 +137,7 @@ export function VolumeDeltaBacktest() {
       title: 'TP',
     });
 
+    // SL — red dashed line (sl_price is already below entry for BUY, above for SELL)
     candlestickSeries.createPriceLine({
       price: selectedSignal.sl_price,
       color: '#ef4444',
@@ -145,7 +147,21 @@ export function VolumeDeltaBacktest() {
       title: 'SL',
     });
 
-    chart.timeScale().fitContent();
+    // Entry — blue solid line
+    candlestickSeries.createPriceLine({
+      price: selectedSignal.entry_price,
+      color: '#6366f1',
+      lineWidth: 1,
+      lineStyle: 0, // Solid
+      axisLabelVisible: true,
+      title: 'Entry',
+    });
+
+    // Auto-scroll to the entry region (±4h) instead of fitting the whole day
+    const viewFrom = (tradeTime - 4 * 3600) as Time;
+    const viewTo = (tradeTime + 4 * 3600) as Time;
+    chart.timeScale().setVisibleRange({ from: viewFrom, to: viewTo });
+
     chartRef.current = chart;
 
     const handleResize = () => {
@@ -163,14 +179,13 @@ export function VolumeDeltaBacktest() {
     };
   }, [candles, selectedSignal]);
 
-
   return (
     <div className="card-ink p-6 space-y-6">
       <div className="flex justify-between items-center">
         <h2 className="text-xl font-bold">🌊 Volume Delta Profile Strategy</h2>
-        <button 
-          onClick={handleRun} 
-          disabled={loading} 
+        <button
+          onClick={handleRun}
+          disabled={loading}
           className="btn-ink px-6 py-3"
         >
           {loading ? 'Running Backtest...' : '🚀 Run Backtest'}
@@ -219,23 +234,22 @@ export function VolumeDeltaBacktest() {
               </thead>
               <tbody>
                 {result.signals.map((signal: any, index: number) => (
-                  <tr 
-                    key={index} 
-                    className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selectedSignal === signal ? 'bg-slate-100' : ''}`}
+                  <tr
+                    key={index}
+                    className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selectedSignal === signal ? 'bg-indigo-50 border-l-2 border-l-indigo-400' : ''}`}
                     onClick={() => setSelectedSignal(signal)}
                   >
-                    <td className="px-4 py-2">{signal.entry_time}</td>
-
+                    <td className="px-4 py-2 font-mono text-xs">{signal.entry_time}</td>
                     <td className="px-4 py-2">
-                      <span className={`px-2 py-0.5 rounded text-xs ${signal.direction === 'buy' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${signal.direction === 'buy' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
                         {signal.direction.toUpperCase()}
                       </span>
                     </td>
-                    <td className="px-4 py-2">{signal.entry_price.toFixed(2)}</td>
-                    <td className="px-4 py-2">{signal.tp_price.toFixed(2)}</td>
-                    <td className="px-4 py-2">{signal.sl_price.toFixed(2)}</td>
+                    <td className="px-4 py-2 font-mono">{signal.entry_price.toFixed(2)}</td>
+                    <td className="px-4 py-2 font-mono text-emerald-600">{signal.tp_price.toFixed(2)}</td>
+                    <td className="px-4 py-2 font-mono text-rose-600">{signal.sl_price.toFixed(2)}</td>
                     <td className="px-4 py-2">
-                      <span className={`capitalize ${signal.outcome === 'win' ? 'text-emerald-600' : signal.outcome === 'loss' ? 'text-rose-600' : 'text-slate-500'}`}>
+                      <span className={`capitalize font-medium ${signal.outcome === 'win' ? 'text-emerald-600' : signal.outcome === 'loss' ? 'text-rose-600' : 'text-slate-400'}`}>
                         {signal.outcome}
                       </span>
                     </td>
@@ -248,23 +262,51 @@ export function VolumeDeltaBacktest() {
 
           {selectedSignal && (
             <div className="mt-6 border-t border-slate-100 pt-6">
-              <div className="flex justify-between items-center mb-4">
+              <div className="flex justify-between items-start mb-4 flex-wrap gap-3">
                 <div>
-                  <h3 className="text-lg font-bold">Chart for {selectedSignal.entry_time}</h3>
+                  <h3 className="text-lg font-bold">
+                    {selectedSignal.direction === 'buy' ? '🟢' : '🔴'} {selectedSignal.direction.toUpperCase()} @ {selectedSignal.entry_price.toFixed(2)}
+                  </h3>
                   <p className="text-sm text-slate-500">
-                    {selectedSignal.direction.toUpperCase()} @ {selectedSignal.entry_price.toFixed(2)} | 
-                    TP: {selectedSignal.tp_price.toFixed(2)} | 
-                    SL: {selectedSignal.sl_price.toFixed(2)}
+                    {selectedSignal.entry_time} &nbsp;·&nbsp;
+                    <span className="text-emerald-600">TP {selectedSignal.tp_price.toFixed(2)}</span>
+                    &nbsp;·&nbsp;
+                    <span className="text-rose-600">SL {selectedSignal.sl_price.toFixed(2)}</span>
+                    &nbsp;·&nbsp;
+                    <span className={selectedSignal.outcome === 'win' ? 'text-emerald-600 font-semibold' : selectedSignal.outcome === 'loss' ? 'text-rose-600 font-semibold' : 'text-slate-400'}>
+                      {selectedSignal.outcome.toUpperCase()} {selectedSignal.r_multiple.toFixed(1)}R
+                    </span>
                   </p>
                 </div>
-                {chartLoading && <span className="text-sm text-slate-400">Loading candles...</span>}
+
+                {/* Fix 3 — Timeframe switcher */}
+                <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+                  {TIMEFRAMES.map(tf => (
+                    <button
+                      key={tf}
+                      onClick={() => setTimeframe(tf)}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                        timeframe === tf
+                          ? 'bg-white text-indigo-600 shadow-sm'
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      {tf}
+                    </button>
+                  ))}
+                  {chartLoading && <span className="text-xs text-slate-400 ml-2">Loading...</span>}
+                </div>
               </div>
-              <div ref={chartContainerRef} className="w-full bg-white rounded-lg border border-slate-100" style={{ minHeight: '400px' }} />
+
+              <div
+                ref={chartContainerRef}
+                className="w-full bg-white rounded-lg border border-slate-100"
+                style={{ minHeight: '420px' }}
+              />
             </div>
           )}
         </div>
       )}
-
     </div>
   );
 }

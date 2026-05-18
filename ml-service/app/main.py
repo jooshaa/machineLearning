@@ -764,22 +764,35 @@ async def backtest_volume_delta():
         raise HTTPException(status_code=500, detail=f"Volume Delta Backtest failed: {str(e)}")
 
 @app.get("/candles/{date}")
-async def get_candles(date: str):
+async def get_candles(date: str, timeframe: str = "5min"):
     path = f"data/raw/mbo/NQ/{date}.parquet"
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail=f"Candles data not found for date {date}")
-        
+
+    # Map frontend timeframe strings to pandas resample rules
+    timeframe_map = {
+        "1m":   "1min",
+        "1min": "1min",
+        "5m":   "5min",
+        "5min": "5min",
+        "15m":  "15min",
+        "15min":"15min",
+        "1H":   "1h",
+        "1h":   "1h",
+    }
+    resample_rule = timeframe_map.get(timeframe, "5min")
+
     try:
         mbo_df = pd.read_parquet(path)
         if mbo_df.empty:
             return []
             
-        # Filter for trades
+        # Filter for trades only
         trades = mbo_df[mbo_df['action'] == 'T'].copy()
         if trades.empty:
             return []
             
-        # Handle scale if needed (like in strategy_volume_delta.py)
+        # Handle scale if needed
         median_price = trades['price'].median()
         if median_price > 1e8:
             trades['price'] = trades['price'] / 1e9
@@ -795,8 +808,8 @@ async def get_candles(date: str):
         if not isinstance(trades.index, pd.DatetimeIndex):
             trades.index = pd.to_datetime(trades.index)
             
-        # Resample to 5min candles
-        candles = trades['price'].resample('5min').ohlc()
+        # Resample to requested timeframe
+        candles = trades['price'].resample(resample_rule).ohlc()
         candles.dropna(inplace=True)
         
         # Format as JSON array

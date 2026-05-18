@@ -124,8 +124,8 @@ export function fetchCandles(payload: {
   );
 }
 
-export function fetchLocalCandles(date: string) {
-  return fetch(`http://localhost:8000/candles/${date}`)
+export function fetchLocalCandles(date: string, timeframe: string = '5m') {
+  return fetch(`http://localhost:8000/candles/${date}?timeframe=${timeframe}`)
     .then(res => {
       if (!res.ok) throw new Error(`Failed to fetch candles: ${res.statusText}`);
       return res.json();
