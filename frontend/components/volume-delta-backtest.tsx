@@ -57,7 +57,6 @@ export function VolumeDeltaBacktest() {
   useEffect(() => {
     if (!chartContainerRef.current || candles.length === 0 || !selectedSignal) return;
 
-    // Clean up previous chart
     if (chartRef.current) {
       chartRef.current.remove();
     }
@@ -87,7 +86,7 @@ export function VolumeDeltaBacktest() {
       wickDownColor: '#ef4444',
     });
 
-    // Show full trading day — no time window filter
+    // Build chart data from all loaded candles (multi-day)
     const chartData = candles
       .filter(c => c.open && c.high && c.low && c.close)
       .map(c => ({
@@ -101,65 +100,34 @@ export function VolumeDeltaBacktest() {
 
     candlestickSeries.setData(chartData);
 
-    // Find the candle closest to entry time for marker placement
-    const tradeTime = new Date(selectedSignal.entry_time).getTime() / 1000;
+    // Find the candle closest to entry time for the marker
+    const entryTs = new Date(selectedSignal.entry_time).getTime() / 1000;
     let closestCandleTime = chartData[0]?.time as number;
     for (let i = chartData.length - 1; i >= 0; i--) {
-      if ((chartData[i].time as number) <= tradeTime) {
+      if ((chartData[i].time as number) <= entryTs) {
         closestCandleTime = chartData[i].time as number;
         break;
       }
     }
 
-    // Fix 2: Arrow marker — BUY = green up, SELL = red down; text is just direction
-    const markerColor = selectedSignal.direction === 'buy' ? '#10b981' : '#ef4444';
+    // Single marker: direction + TP/SL in the label
+    const isBuy = selectedSignal.direction === 'buy';
+    const markerText = `${isBuy ? 'BUY' : 'SELL'} TP:${selectedSignal.tp_price.toFixed(0)} SL:${selectedSignal.sl_price.toFixed(0)}`;
 
     createSeriesMarkers(candlestickSeries, [
       {
         time: closestCandleTime as Time,
-        position: selectedSignal.direction === 'buy' ? 'belowBar' : 'aboveBar',
-        color: markerColor,
-        shape: selectedSignal.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: selectedSignal.direction === 'buy' ? 'BUY' : 'SELL',
+        position: isBuy ? 'belowBar' : 'aboveBar',
+        color: isBuy ? '#10b981' : '#ef4444',
+        shape: isBuy ? 'arrowUp' : 'arrowDown',
+        text: markerText,
       } as SeriesMarker<Time>,
     ]);
 
-    // Fix 3 & 4: Price lines with explicit price labels
-    // TP — green dashed
-    candlestickSeries.createPriceLine({
-      price: selectedSignal.tp_price,
-      color: '#10b981',
-      lineWidth: 2,
-      lineStyle: 2,
-      axisLabelVisible: true,
-      title: `TP ${selectedSignal.tp_price.toFixed(2)}`,
-    });
-
-    // SL — red dashed (already correct in data: below entry for BUY, above for SELL)
-    candlestickSeries.createPriceLine({
-      price: selectedSignal.sl_price,
-      color: '#ef4444',
-      lineWidth: 2,
-      lineStyle: 2,
-      axisLabelVisible: true,
-      title: `SL ${selectedSignal.sl_price.toFixed(2)}`,
-    });
-
-    // Entry — indigo solid
-    candlestickSeries.createPriceLine({
-      price: selectedSignal.entry_price,
-      color: '#6366f1',
-      lineWidth: 1,
-      lineStyle: 0,
-      axisLabelVisible: true,
-      title: `Entry ${selectedSignal.entry_price.toFixed(2)}`,
-    });
-
-    // Fix 1: Visible range = ±2 hours around entry time
-    const entryTimestamp = new Date(selectedSignal.entry_time).getTime() / 1000;
+    // Visible range: 3 days before entry + 1 day after
     chart.timeScale().setVisibleRange({
-      from: (entryTimestamp - 2 * 3600) as Time,
-      to:   (entryTimestamp + 2 * 3600) as Time,
+      from: (entryTs - 3 * 24 * 3600) as Time,
+      to:   (entryTs + 24 * 3600) as Time,
     });
 
     chartRef.current = chart;

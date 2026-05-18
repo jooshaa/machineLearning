@@ -764,12 +764,21 @@ async def backtest_volume_delta():
         raise HTTPException(status_code=500, detail=f"Volume Delta Backtest failed: {str(e)}")
 
 @app.get("/candles/{date}")
-async def get_candles(date: str, timeframe: str = "5min"):
-    path = f"data/raw/mbo/NQ/{date}.parquet"
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail=f"Candles data not found for date {date}")
+async def get_candles(
+    date: str,
+    timeframe: str = "5min",
+    days_before: int = 3,
+    days_after: int = 1,
+):
+    """
+    Load MBO parquet files for date ± days_before/days_after, build OHLC candles.
+    date: YYYY-MM-DD (the entry/signal date)
+    timeframe: 1m | 5m | 15m | 1H (default 5min)
+    days_before: how many prior calendar days to include (default 3)
+    days_after:  how many subsequent calendar days to include (default 1)
+    """
+    from datetime import date as dt_date, timedelta
 
-    # Map frontend timeframe strings to pandas resample rules
     timeframe_map = {
         "1m":   "1min",
         "1min": "1min",
@@ -782,47 +791,65 @@ async def get_candles(date: str, timeframe: str = "5min"):
     }
     resample_rule = timeframe_map.get(timeframe, "5min")
 
+    base_date = dt_date.fromisoformat(date)
+    data_dir = "data/raw/mbo/NQ"
+
+    # Collect all available parquet files in the requested range
+    frames = []
+    for delta in range(-days_before, days_after + 1):
+        d = base_date + timedelta(days=delta)
+        path = os.path.join(data_dir, f"{d}.parquet")
+        if not os.path.exists(path):
+            continue
+        try:
+            df = pd.read_parquet(path)
+            frames.append(df)
+        except Exception:
+            continue
+
+    if not frames:
+        raise HTTPException(status_code=404, detail=f"No parquet data found around date {date}")
+
     try:
-        mbo_df = pd.read_parquet(path)
-        if mbo_df.empty:
-            return []
-            
+        mbo_df = pd.concat(frames)
+
         # Filter for trades only
         trades = mbo_df[mbo_df['action'] == 'T'].copy()
         if trades.empty:
             return []
-            
-        # Handle scale if needed
+
+        # Handle price scale
         median_price = trades['price'].median()
         if median_price > 1e8:
             trades['price'] = trades['price'] / 1e9
         elif median_price > 1e5:
             trades['price'] = trades['price'] / 1e4
-            
-        # Filter outliers before building candles
+
+        # Filter outliers
         q01 = trades['price'].quantile(0.001)
         q999 = trades['price'].quantile(0.999)
         trades = trades[(trades['price'] >= q01) & (trades['price'] <= q999)]
-            
+
         # Ensure datetime index
         if not isinstance(trades.index, pd.DatetimeIndex):
             trades.index = pd.to_datetime(trades.index)
-            
+
+        trades = trades.sort_index()
+
         # Resample to requested timeframe
         candles = trades['price'].resample(resample_rule).ohlc()
         candles.dropna(inplace=True)
-        
-        # Format as JSON array
+
         result = []
         for ts, row in candles.iterrows():
             result.append({
                 "timestamp": ts.isoformat(),
-                "open": float(row['open']),
-                "high": float(row['high']),
-                "low": float(row['low']),
-                "close": float(row['close'])
+                "open":  float(row['open']),
+                "high":  float(row['high']),
+                "low":   float(row['low']),
+                "close": float(row['close']),
             })
-            
+
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to build candles: {str(e)}")
