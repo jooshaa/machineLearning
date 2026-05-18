@@ -111,10 +111,8 @@ export function VolumeDeltaBacktest() {
       }
     }
 
-    // Outcome colour: green = win, red = loss, yellow = timeout
-    let markerColor = '#eab308';
-    if (selectedSignal.outcome === 'win') markerColor = '#10b981';
-    if (selectedSignal.outcome === 'loss') markerColor = '#ef4444';
+    // Fix 2: Arrow marker — BUY = green up, SELL = red down; text is just direction
+    const markerColor = selectedSignal.direction === 'buy' ? '#10b981' : '#ef4444';
 
     createSeriesMarkers(candlestickSeries, [
       {
@@ -122,45 +120,47 @@ export function VolumeDeltaBacktest() {
         position: selectedSignal.direction === 'buy' ? 'belowBar' : 'aboveBar',
         color: markerColor,
         shape: selectedSignal.direction === 'buy' ? 'arrowUp' : 'arrowDown',
-        text: `${selectedSignal.direction.toUpperCase()} — ${selectedSignal.outcome.toUpperCase()}`,
+        text: selectedSignal.direction === 'buy' ? 'BUY' : 'SELL',
       } as SeriesMarker<Time>,
     ]);
 
-    // Fix 1: Use sl_price and tp_price directly from signal — they are already correct
-    // TP — green dashed line
+    // Fix 3 & 4: Price lines with explicit price labels
+    // TP — green dashed
     candlestickSeries.createPriceLine({
       price: selectedSignal.tp_price,
       color: '#10b981',
       lineWidth: 2,
-      lineStyle: 2, // Dashed
+      lineStyle: 2,
       axisLabelVisible: true,
-      title: 'TP',
+      title: `TP ${selectedSignal.tp_price.toFixed(2)}`,
     });
 
-    // SL — red dashed line (sl_price is already below entry for BUY, above for SELL)
+    // SL — red dashed (already correct in data: below entry for BUY, above for SELL)
     candlestickSeries.createPriceLine({
       price: selectedSignal.sl_price,
       color: '#ef4444',
       lineWidth: 2,
-      lineStyle: 2, // Dashed
+      lineStyle: 2,
       axisLabelVisible: true,
-      title: 'SL',
+      title: `SL ${selectedSignal.sl_price.toFixed(2)}`,
     });
 
-    // Entry — blue solid line
+    // Entry — indigo solid
     candlestickSeries.createPriceLine({
       price: selectedSignal.entry_price,
       color: '#6366f1',
       lineWidth: 1,
-      lineStyle: 0, // Solid
+      lineStyle: 0,
       axisLabelVisible: true,
-      title: 'Entry',
+      title: `Entry ${selectedSignal.entry_price.toFixed(2)}`,
     });
 
-    // Auto-scroll to the entry region (±4h) instead of fitting the whole day
-    const viewFrom = (tradeTime - 4 * 3600) as Time;
-    const viewTo = (tradeTime + 4 * 3600) as Time;
-    chart.timeScale().setVisibleRange({ from: viewFrom, to: viewTo });
+    // Fix 1: Visible range = ±2 hours around entry time
+    const entryTimestamp = new Date(selectedSignal.entry_time).getTime() / 1000;
+    chart.timeScale().setVisibleRange({
+      from: (entryTimestamp - 2 * 3600) as Time,
+      to:   (entryTimestamp + 2 * 3600) as Time,
+    });
 
     chartRef.current = chart;
 
