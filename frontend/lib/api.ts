@@ -125,9 +125,12 @@ export function fetchCandles(payload: {
 }
 
 export function fetchLocalCandles(date: string) {
-  return fetchJson<{ candles: Array<Record<string, unknown>> }>(
-    `/backtests/candles/local/${date}`
-  );
+  return fetch(`http://localhost:8000/candles/${date}`)
+    .then(res => {
+      if (!res.ok) throw new Error(`Failed to fetch candles: ${res.statusText}`);
+      return res.json();
+    })
+    .then(data => ({ candles: data }));
 }
 
 export function runAdvancedBacktest(payload: Record<string, unknown>) {

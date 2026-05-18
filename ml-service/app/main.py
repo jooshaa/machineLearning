@@ -763,6 +763,52 @@ async def backtest_volume_delta():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Volume Delta Backtest failed: {str(e)}")
 
+@app.get("/candles/{date}")
+async def get_candles(date: str):
+    path = f"data/raw/mbo/NQ/{date}.parquet"
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Candles data not found for date {date}")
+        
+    try:
+        mbo_df = pd.read_parquet(path)
+        if mbo_df.empty:
+            return []
+            
+        # Filter for trades
+        trades = mbo_df[mbo_df['action'] == 'T'].copy()
+        if trades.empty:
+            return []
+            
+        # Handle scale if needed (like in strategy_volume_delta.py)
+        median_price = trades['price'].median()
+        if median_price > 1e8:
+            trades['price'] = trades['price'] / 1e9
+        elif median_price > 1e5:
+            trades['price'] = trades['price'] / 1e4
+            
+        # Ensure datetime index
+        if not isinstance(trades.index, pd.DatetimeIndex):
+            trades.index = pd.to_datetime(trades.index)
+            
+        # Resample to 5min candles
+        candles = trades['price'].resample('5min').ohlc()
+        candles.dropna(inplace=True)
+        
+        # Format as JSON array
+        result = []
+        for ts, row in candles.iterrows():
+            result.append({
+                "timestamp": ts.isoformat(),
+                "open": float(row['open']),
+                "high": float(row['high']),
+                "low": float(row['low']),
+                "close": float(row['close'])
+            })
+            
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build candles: {str(e)}")
+
 # ---------------------------------------------------------------------------
 # Level 3 (MBO) Order Flow Data Pipeline Endpoints
 # ---------------------------------------------------------------------------
