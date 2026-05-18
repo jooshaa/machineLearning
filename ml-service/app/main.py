@@ -767,7 +767,7 @@ async def backtest_volume_delta():
 async def get_candles(
     date: str,
     timeframe: str = "5min",
-    days_before: int = 3,
+    days_before: int = 7,
     days_after: int = 1,
 ):
     """

@@ -124,9 +124,9 @@ export function VolumeDeltaBacktest() {
       } as SeriesMarker<Time>,
     ]);
 
-    // Visible range: 3 days before entry + 1 day after
+    // Visible range: 6 days before entry + 1 day after
     chart.timeScale().setVisibleRange({
-      from: (entryTs - 3 * 24 * 3600) as Time,
+      from: (entryTs - 6 * 24 * 3600) as Time,
       to:   (entryTs + 24 * 3600) as Time,
     });
 
