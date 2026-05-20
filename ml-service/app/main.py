@@ -770,47 +770,44 @@ async def get_candles(
     days_before: int = 7,
     days_after: int = 1,
 ):
-    """
-    Load MBO parquet files for date ± days_before/days_after, build OHLC candles.
-    date: YYYY-MM-DD (the entry/signal date)
-    timeframe: 1m | 5m | 15m | 1H (default 5min)
-    days_before: how many prior calendar days to include (default 3)
-    days_after:  how many subsequent calendar days to include (default 1)
-    """
-    from datetime import date as dt_date, timedelta
-
-    timeframe_map = {
-        "1m":   "1min",
-        "1min": "1min",
-        "5m":   "5min",
-        "5min": "5min",
-        "15m":  "15min",
-        "15min":"15min",
-        "1H":   "1h",
-        "1h":   "1h",
-    }
-    resample_rule = timeframe_map.get(timeframe, "5min")
-
-    base_date = dt_date.fromisoformat(date)
-    data_dir = "data/raw/mbo/NQ"
-
-    # Collect all available parquet files in the requested range
-    frames = []
-    for delta in range(-days_before, days_after + 1):
-        d = base_date + timedelta(days=delta)
-        path = os.path.join(data_dir, f"{d}.parquet")
-        if not os.path.exists(path):
-            continue
-        try:
-            df = pd.read_parquet(path)
-            frames.append(df)
-        except Exception:
-            continue
-
-    if not frames:
-        raise HTTPException(status_code=404, detail=f"No parquet data found around date {date}")
-
     try:
+        from datetime import date as dt_date, timedelta
+
+        timeframe_map = {
+            "1m":   "1min",
+            "1min": "1min",
+            "5m":   "5min",
+            "5min": "5min",
+            "15m":  "15min",
+            "15min":"15min",
+            "1H":   "1h",
+            "1h":   "1h",
+        }
+        resample_rule = timeframe_map.get(timeframe, "5min")
+
+        base_date = dt_date.fromisoformat(date)
+        data_dir = "data/raw/mbo/NQ"
+
+        # Collect all available parquet files in the requested range
+        frames = []
+        for delta in range(-days_before, days_after + 1):
+            d = base_date + timedelta(days=delta)
+            path = os.path.join(data_dir, f"{d}.parquet")
+            if not os.path.exists(path):
+                continue
+            try:
+                # Optimized: Read only required columns to fix memory issues
+                try:
+                    df = pd.read_parquet(path, columns=['ts_event', 'price', 'size', 'action'])
+                except Exception:
+                    df = pd.read_parquet(path, columns=['price', 'size', 'action'])
+                frames.append(df)
+            except Exception:
+                continue
+
+        if not frames:
+            raise ValueError(f"No parquet data found around date {date}")
+
         mbo_df = pd.concat(frames)
 
         # Filter for trades only
@@ -852,7 +849,8 @@ async def get_candles(
 
         return result
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to build candles: {str(e)}")
+        print(f"Candles error: {e}")
+        return {"candles": [], "error": str(e)}
 
 # ---------------------------------------------------------------------------
 # Level 3 (MBO) Order Flow Data Pipeline Endpoints
