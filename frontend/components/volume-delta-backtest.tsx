@@ -86,8 +86,13 @@ export function VolumeDeltaBacktest() {
       wickDownColor: '#ef4444',
     });
 
-    // Build chart data from all loaded candles (multi-day)
-    const chartData = candles
+    // Build chart data from candles within 20% of entry price (Fix 2)
+    const entryPrice = selectedSignal.entry_price;
+    const filtered = candles.filter(c => 
+      c.close > entryPrice * 0.8 && c.close < entryPrice * 1.2
+    );
+
+    const chartData = filtered
       .filter(c => c.open && c.high && c.low && c.close)
       .map(c => ({
         time: (new Date(c.timestamp as string).getTime() / 1000) as Time,
@@ -124,10 +129,10 @@ export function VolumeDeltaBacktest() {
       } as SeriesMarker<Time>,
     ]);
 
-    // Visible range: 6 days before entry + 1 day after
+    // Center the entry on chart (Fix 1)
     chart.timeScale().setVisibleRange({
-      from: (entryTs - 6 * 24 * 3600) as Time,
-      to:   (entryTs + 24 * 3600) as Time,
+      from: (entryTs - 4 * 24 * 3600) as Time,  // 4 days before
+      to:   (entryTs + 4 * 24 * 3600) as Time,  // 4 days after
     });
 
     chartRef.current = chart;
