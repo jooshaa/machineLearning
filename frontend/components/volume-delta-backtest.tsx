@@ -129,11 +129,13 @@ export function VolumeDeltaBacktest() {
       } as SeriesMarker<Time>,
     ]);
 
-    // Center the entry on chart (Fix 1)
-    chart.timeScale().setVisibleRange({
-      from: (entryTs - 4 * 24 * 3600) as Time,  // 4 days before
-      to:   (entryTs + 4 * 24 * 3600) as Time,  // 4 days after
-    });
+    // Center the entry on chart (Fix 1) — only after data is loaded
+    if (chartData.length > 0) {
+      chart.timeScale().setVisibleRange({
+        from: (entryTs - 4 * 24 * 3600) as Time,  // 4 days before
+        to:   (entryTs + 4 * 24 * 3600) as Time,  // 4 days after
+      });
+    }
 
     chartRef.current = chart;
 
