@@ -748,6 +748,12 @@ async def backtest_volume_delta():
     import pandas as pd
 
     def generate():
+        def serialize_signal(signal: dict) -> dict:
+            return {
+                k: str(v) if hasattr(v, 'isoformat') else v 
+                for k, v in signal.items()
+            }
+
         yield '{"signals": ['
         first = True
         
@@ -759,7 +765,7 @@ async def backtest_volume_delta():
             for sig in chunk:
                 if not first:
                     yield ","
-                yield json.dumps(sig)
+                yield json.dumps(serialize_signal(sig))
                 first = False
                 
         # Calculate summary statistics
