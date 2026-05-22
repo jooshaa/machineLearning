@@ -743,25 +743,47 @@ def api_backtest_fabio(request: FabioBacktestRequest):
 
 @app.post("/backtest-volume-delta")
 async def backtest_volume_delta():
-    try:
-        result_df = strategy_volume_delta.main()
+    from fastapi.responses import StreamingResponse
+    import json
+    import pandas as pd
+
+    def generate():
+        yield '{"signals": ['
+        first = True
         
-        if result_df.empty:
-            return {"signals": [], "summary": {"total": 0}}
+        # Accumulate just the lightweight signal dicts for summary calc
+        all_signals = []
+        
+        for chunk in strategy_volume_delta.stream_main():
+            all_signals.extend(chunk)
+            for sig in chunk:
+                if not first:
+                    yield ","
+                yield json.dumps(sig)
+                first = False
+                
+        # Calculate summary statistics
+        if all_signals:
+            df = pd.DataFrame(all_signals)
+            wins = len(df[df['outcome'] == 'win'])
+            losses = len(df[df['outcome'] == 'loss'])
+            timeouts = len(df[df['outcome'] == 'timeout'])
+            avg_r = float(df['r_multiple'].mean())
+        else:
+            wins = losses = timeouts = 0
+            avg_r = 0.0
             
-        signals = result_df.to_dict(orient='records')
-        
         summary = {
-            "total": len(result_df),
-            "wins": len(result_df[result_df['outcome'] == 'win']),
-            "losses": len(result_df[result_df['outcome'] == 'loss']),
-            "timeouts": len(result_df[result_df['outcome'] == 'timeout']),
-            "avg_r": float(result_df['r_multiple'].mean()) if not result_df.empty else 0.0,
+            "total": len(all_signals),
+            "wins": wins,
+            "losses": losses,
+            "timeouts": timeouts,
+            "avg_r": avg_r,
         }
         
-        return {"signals": signals, "summary": summary}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Volume Delta Backtest failed: {str(e)}")
+        yield f'], "summary": {json.dumps(summary)}}}'
+
+    return StreamingResponse(generate(), media_type="application/json")
 
 @app.get("/candles/{date}")
 async def get_candles(

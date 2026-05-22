@@ -383,8 +383,8 @@ def backtest(features_df, impulses, mbo_df, filename):
                     
     return pd.DataFrame(signals)
 
-def main():
-    print("🚀 Starting Volume Delta Profile Strategy Backtest...")
+def stream_main():
+    print("🚀 Starting Volume Delta Profile Strategy Backtest (Stream Mode)...")
     
     cache_dir = "data/raw/mbo/NQ"
     if not os.path.exists(cache_dir):
@@ -397,14 +397,17 @@ def main():
         create_mock_data()
         files = ["2023-01-03.parquet"]
         
-    all_signals = []
-    
     for filename in files:
         path = os.path.join(cache_dir, filename)
         print(f"\nProcessing {filename}...")
         
         try:
-            mbo_df = pd.read_parquet(path)
+            # Fix 1: Process file by file and read only needed columns to fix OOM issue
+            try:
+                mbo_df = pd.read_parquet(path, columns=['ts_event', 'price', 'size', 'action', 'side', 'order_id'])
+            except Exception:
+                mbo_df = pd.read_parquet(path, columns=['price', 'size', 'action', 'side', 'order_id'])
+                
             if mbo_df.empty:
                 continue
                 
@@ -425,11 +428,12 @@ def main():
             
             print("Running strategy on trades only...")
             impulses = find_impulses(trades_only)
-            signals = backtest(trades_only, impulses, mbo_df, filename)
+            signals_df = backtest(trades_only, impulses, mbo_df, filename)
             
-            if not signals.empty:
-                all_signals.append(signals)
-                print(f"Generated {len(signals)} signals for {filename}")
+            if not signals_df.empty:
+                print(f"Generated {len(signals_df)} signals for {filename}")
+                # Yield signals as dicts
+                yield signals_df.to_dict(orient='records')
                 
         except Exception as e:
             print(f"Error processing {filename}: {e}")
@@ -438,10 +442,17 @@ def main():
                 del mbo_df
             if 'trades_only' in locals():
                 del trades_only
+            if 'signals_df' in locals():
+                del signals_df
             gc.collect()
-            
+
+def main():
+    all_signals = []
+    for chunk in stream_main():
+        all_signals.extend(chunk)
+        
     if all_signals:
-        result_df = pd.concat(all_signals, ignore_index=True)
+        result_df = pd.DataFrame(all_signals)
         os.makedirs("orderflow_ml", exist_ok=True)
         result_df.to_csv("orderflow_ml/volume_delta_dataset.csv", index=False)
         print(f"\n✅ Results exported to orderflow_ml/volume_delta_dataset.csv. Total signals: {len(result_df)}")
