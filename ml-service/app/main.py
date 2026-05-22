@@ -814,7 +814,7 @@ async def get_candles(
         resample_rule = timeframe_map.get(timeframe, "5min")
 
         base_date = dt_date.fromisoformat(date)
-        data_dir = "data/raw/mbo/NQ"
+        data_dir = "data/raw/ohlcv/NQ"
 
         # Collect all available parquet files in the requested range
         frames = []
@@ -824,46 +824,46 @@ async def get_candles(
             if not os.path.exists(path):
                 continue
             try:
-                # Optimized: Read only required columns to fix memory issues
-                try:
-                    df = pd.read_parquet(path, columns=['ts_event', 'price', 'size', 'action'])
-                except Exception:
-                    df = pd.read_parquet(path, columns=['price', 'size', 'action'])
+                df = pd.read_parquet(path)
                 frames.append(df)
             except Exception:
                 continue
 
         if not frames:
-            raise ValueError(f"No parquet data found around date {date}")
+            raise ValueError(f"No OHLCV parquet data found around date {date}")
 
-        mbo_df = pd.concat(frames)
-
-        # Filter for trades only
-        trades = mbo_df[mbo_df['action'] == 'T'].copy()
-        if trades.empty:
-            return []
+        ohlcv_df = pd.concat(frames)
 
         # Handle price scale
-        median_price = trades['price'].median()
+        median_price = ohlcv_df['close'].median()
         if median_price > 1e8:
-            trades['price'] = trades['price'] / 1e9
+            for col in ['open', 'high', 'low', 'close']:
+                if col in ohlcv_df.columns:
+                    ohlcv_df[col] = ohlcv_df[col] / 1e9
         elif median_price > 1e5:
-            trades['price'] = trades['price'] / 1e4
-
-        # Filter outliers
-        q01 = trades['price'].quantile(0.001)
-        q999 = trades['price'].quantile(0.999)
-        trades = trades[(trades['price'] >= q01) & (trades['price'] <= q999)]
+            for col in ['open', 'high', 'low', 'close']:
+                if col in ohlcv_df.columns:
+                    ohlcv_df[col] = ohlcv_df[col] / 1e4
 
         # Ensure datetime index
-        if not isinstance(trades.index, pd.DatetimeIndex):
-            trades.index = pd.to_datetime(trades.index)
+        if not isinstance(ohlcv_df.index, pd.DatetimeIndex):
+            ohlcv_df.index = pd.to_datetime(ohlcv_df.index)
 
-        trades = trades.sort_index()
+        ohlcv_df = ohlcv_df.sort_index()
 
         # Resample to requested timeframe
-        candles = trades['price'].resample(resample_rule).ohlc()
-        candles.dropna(inplace=True)
+        if resample_rule in ["1min", "1m"]:
+            candles = ohlcv_df
+        else:
+            candles = ohlcv_df.resample(resample_rule).agg({
+                'open': 'first',
+                'high': 'max',
+                'low': 'min',
+                'close': 'last',
+                'volume': 'sum'
+            })
+            
+        candles.dropna(subset=['close'], inplace=True)
 
         result = []
         for ts, row in candles.iterrows():

@@ -92,7 +92,7 @@ export function VolumeDeltaBacktest() {
       c.close > entryPrice * 0.8 && c.close < entryPrice * 1.2
     );
 
-    const chartData = filtered
+    const chartDataUnfiltered = filtered
       .filter(c => c.open && c.high && c.low && c.close)
       .map(c => ({
         time: (new Date(c.timestamp as string).getTime() / 1000) as Time,
@@ -103,31 +103,32 @@ export function VolumeDeltaBacktest() {
       }))
       .sort((a, b) => (a.time as number) - (b.time as number));
 
+    const chartData = chartDataUnfiltered.filter(c => {
+      const body = Math.abs(c.close - c.open);
+      const wick = c.high - c.low;
+      return body === 0 || wick <= body * 10;
+    });
+
     candlestickSeries.setData(chartData);
 
-    // Find the candle closest to entry time for the marker
     const entryTs = new Date(selectedSignal.entry_time).getTime() / 1000;
-    let closestCandleTime = chartData[0]?.time as number;
-    for (let i = chartData.length - 1; i >= 0; i--) {
-      if ((chartData[i].time as number) <= entryTs) {
-        closestCandleTime = chartData[i].time as number;
-        break;
-      }
+    
+    if (chartData.length > 0) {
+      const closestCandle = chartData.reduce((prev, curr) => 
+        Math.abs((curr.time as number) - entryTs) < Math.abs((prev.time as number) - entryTs) 
+        ? curr : prev
+      );
+
+      const isBuy = selectedSignal.direction === 'buy';
+
+      candlestickSeries.setMarkers([{
+        time: closestCandle.time,
+        position: isBuy ? 'belowBar' : 'aboveBar',
+        color: isBuy ? '#10b981' : '#ef4444',
+        shape: isBuy ? 'arrowUp' : 'arrowDown',
+        text: `${isBuy ? 'BUY' : 'SELL'} TP:${selectedSignal.tp_price.toFixed(0)} SL:${selectedSignal.sl_price.toFixed(0)}`
+      } as SeriesMarker<Time>]);
     }
-
-    // Single marker: direction + TP/SL in the label
-    const isBuy = selectedSignal.direction === 'buy';
-    const markerText = `${isBuy ? 'BUY' : 'SELL'} TP:${selectedSignal.tp_price.toFixed(0)} SL:${selectedSignal.sl_price.toFixed(0)}`;
-
-    // Create a horizontal price line at the exact entry price
-    candlestickSeries.createPriceLine({
-      price: selectedSignal.entry_price,
-      color: isBuy ? '#10b981' : '#ef4444',
-      lineWidth: 2,
-      lineStyle: LineStyle.Solid,
-      axisLabelVisible: true,
-      title: markerText,
-    });
 
     // Center the entry on chart (Fix 1) — only after data is loaded
     if (chartData.length > 0) {
