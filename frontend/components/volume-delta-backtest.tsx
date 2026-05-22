@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { runVolumeDeltaBacktest, fetchLocalCandles } from '@/lib/api';
-import { createChart, CandlestickSeries, createSeriesMarkers, Time, SeriesMarker, ColorType } from 'lightweight-charts';
+import { createChart, CandlestickSeries, Time, SeriesMarker, ColorType, LineStyle } from 'lightweight-charts';
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1H'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
@@ -119,22 +119,27 @@ export function VolumeDeltaBacktest() {
     const isBuy = selectedSignal.direction === 'buy';
     const markerText = `${isBuy ? 'BUY' : 'SELL'} TP:${selectedSignal.tp_price.toFixed(0)} SL:${selectedSignal.sl_price.toFixed(0)}`;
 
-    createSeriesMarkers(candlestickSeries, [
-      {
-        time: closestCandleTime as Time,
-        position: isBuy ? 'belowBar' : 'aboveBar',
-        color: isBuy ? '#10b981' : '#ef4444',
-        shape: isBuy ? 'arrowUp' : 'arrowDown',
-        text: markerText,
-      } as SeriesMarker<Time>,
-    ]);
+    // Create a horizontal price line at the exact entry price
+    candlestickSeries.createPriceLine({
+      price: selectedSignal.entry_price,
+      color: isBuy ? '#10b981' : '#ef4444',
+      lineWidth: 2,
+      lineStyle: LineStyle.Solid,
+      axisLabelVisible: true,
+      title: markerText,
+    });
 
     // Center the entry on chart (Fix 1) — only after data is loaded
     if (chartData.length > 0) {
       chart.timeScale().setVisibleRange({
-        from: (entryTs - 4 * 24 * 3600) as Time,  // 4 days before
-        to:   (entryTs + 4 * 24 * 3600) as Time,  // 4 days after
+        from: (entryTs - 12 * 3600) as Time,  // 12 hours before
+        to:   (entryTs + 12 * 3600) as Time,  // 12 hours after
       });
+
+      console.log('entry_time:', selectedSignal.entry_time);
+      console.log('entryTs:', entryTs);
+      console.log('chartData first:', chartData[0]?.time);
+      console.log('chartData last:', chartData[chartData.length-1]?.time);
     }
 
     chartRef.current = chart;
