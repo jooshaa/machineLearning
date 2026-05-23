@@ -124,8 +124,8 @@ console.log('total candles:', res.candles.length);
     // Center the entry on chart (Fix 1) — only after data is loaded
     if (chartData.length > 0) {
       chart.timeScale().setVisibleRange({
-        from: (entryTs - 12 * 3600) as Time,  // 12 hours before
-        to:   (entryTs + 12 * 3600) as Time,  // 12 hours after
+        from: (entryTs - 4 * 3600) as Time,  // 4 hours before
+        to:   (entryTs + 4 * 3600) as Time,  // 4 hours after
       });
 
       console.log('entry_time:', selectedSignal.entry_time);
