@@ -130,7 +130,7 @@ export function fetchLocalCandles(date: string, timeframe: string = '5m') {
       if (!res.ok) throw new Error(`Failed to fetch candles: ${res.statusText}`);
       return res.json();
     })
-    .then(data => ({ candles: data }));
+    .then(data => data);
 }
 
 export function runAdvancedBacktest(payload: Record<string, unknown>) {
