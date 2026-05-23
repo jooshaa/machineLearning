@@ -846,6 +846,12 @@ async def get_candles(
             (ohlcv_df["close"] > median_close * 0.5) & (ohlcv_df["close"] < median_close * 1.5)
         ]
 
+        # Keep only the most active symbol (front-month contract)
+        # Multiple contracts (e.g. NQM5, NQU5) cause open/close misalignment in resampled candles
+        if 'symbol' in ohlcv_df.columns and ohlcv_df['symbol'].nunique() > 1:
+            top_symbol = ohlcv_df['symbol'].value_counts().idxmax()
+            ohlcv_df = ohlcv_df[ohlcv_df['symbol'] == top_symbol]
+
         # Ensure datetime index
         if not isinstance(ohlcv_df.index, pd.DatetimeIndex):
             ohlcv_df.index = pd.to_datetime(ohlcv_df.index)
@@ -869,7 +875,7 @@ async def get_candles(
         result = []
         for ts, row in candles.iterrows():
             result.append({
-                "timestamp": ts.isoformat(),
+                "timestamp": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "open":  float(row['open']),
                 "high":  float(row['high']),
                 "low":   float(row['low']),

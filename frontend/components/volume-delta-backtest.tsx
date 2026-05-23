@@ -68,25 +68,33 @@ console.log('total candles:', res.candles.length);
       width: chartContainerRef.current.clientWidth,
       height: 420,
       layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#64748b',
+        background: { type: ColorType.Solid, color: '#131722' },
+        textColor: '#d1d4dc',
       },
       grid: {
-        vertLines: { color: '#f0f0f0' },
-        horzLines: { color: '#f0f0f0' },
+        vertLines: { color: '#1e222d' },
+        horzLines: { color: '#1e222d' },
       },
       timeScale: {
         timeVisible: true,
         secondsVisible: false,
+        barSpacing: 12,
+        minBarSpacing: 6,
+      },
+      localization: {
+        timeFormatter: (time: number) => {
+          const date = new Date(time * 1000);
+          return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+        },
       },
     });
 
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#10b981',
-      downColor: '#ef4444',
+      upColor: '#26a69a',
+      downColor: '#ef5350',
       borderVisible: false,
-      wickUpColor: '#10b981',
-      wickDownColor: '#ef4444',
+      wickUpColor: '#26a69a',
+      wickDownColor: '#ef5350',
     });
 
     const chartData = candles
