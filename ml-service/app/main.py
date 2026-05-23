@@ -825,6 +825,9 @@ async def get_candles(
                 continue
             try:
                 df = pd.read_parquet(path)
+                # Keep only outright contracts, exclude calendar spreads
+                if 'symbol' in df.columns:
+                    df = df[~df['symbol'].str.contains('-', na=False)]
                 frames.append(df)
             except Exception:
                 continue
