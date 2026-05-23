@@ -834,16 +834,14 @@ async def get_candles(
 
         ohlcv_df = pd.concat(frames)
 
-        # Handle price scale
-        median_price = ohlcv_df['close'].median()
-        if median_price > 1e8:
-            for col in ['open', 'high', 'low', 'close']:
-                if col in ohlcv_df.columns:
-                    ohlcv_df[col] = ohlcv_df[col] / 1e9
-        elif median_price > 1e5:
-            for col in ['open', 'high', 'low', 'close']:
-                if col in ohlcv_df.columns:
-                    ohlcv_df[col] = ohlcv_df[col] / 1e4
+        # Filter out corrupt rows where OHLC values are far from median
+        median_close = ohlcv_df["close"].median()
+        ohlcv_df = ohlcv_df[
+            (ohlcv_df["open"]  > median_close * 0.5) & (ohlcv_df["open"]  < median_close * 1.5) &
+            (ohlcv_df["high"]  > median_close * 0.5) & (ohlcv_df["high"]  < median_close * 1.5) &
+            (ohlcv_df["low"]   > median_close * 0.5) & (ohlcv_df["low"]   < median_close * 1.5) &
+            (ohlcv_df["close"] > median_close * 0.5) & (ohlcv_df["close"] < median_close * 1.5)
+        ]
 
         # Ensure datetime index
         if not isinstance(ohlcv_df.index, pd.DatetimeIndex):
@@ -875,7 +873,7 @@ async def get_candles(
                 "close": float(row['close']),
             })
 
-        return result
+        return {"candles": result}
     except Exception as e:
         print(f"Candles error: {e}")
         return {"candles": [], "error": str(e)}

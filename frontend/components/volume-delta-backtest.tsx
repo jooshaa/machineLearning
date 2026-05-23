@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { runVolumeDeltaBacktest, fetchLocalCandles } from '@/lib/api';
-import { createChart, CandlestickSeries, Time, SeriesMarker, ColorType, LineStyle } from 'lightweight-charts';
+import { createChart, CandlestickSeries, createSeriesMarkers, Time, SeriesMarker, ColorType, LineStyle } from 'lightweight-charts';
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1H'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
@@ -43,7 +43,10 @@ export function VolumeDeltaBacktest() {
       try {
         const date = selectedSignal.entry_time.substring(0, 10);
         const res = await fetchLocalCandles(date, timeframe);
-        setCandles(res.candles);
+        const candleArray = Array.isArray(res) ? res : (res.candles ?? []);
+setCandles(candleArray);
+console.log('first candle:', res.candles[0]);
+console.log('total candles:', res.candles.length);
       } catch (e) {
         console.error('Failed to fetch candles', e);
       } finally {
@@ -86,13 +89,7 @@ export function VolumeDeltaBacktest() {
       wickDownColor: '#ef4444',
     });
 
-    // Build chart data from candles within 20% of entry price (Fix 2)
-    const entryPrice = selectedSignal.entry_price;
-    const filtered = candles.filter(c => 
-      c.close > entryPrice * 0.8 && c.close < entryPrice * 1.2
-    );
-
-    const chartDataUnfiltered = filtered
+    const chartData = candles
       .filter(c => c.open && c.high && c.low && c.close)
       .map(c => ({
         time: (new Date(c.timestamp as string).getTime() / 1000) as Time,
@@ -102,12 +99,6 @@ export function VolumeDeltaBacktest() {
         close: c.close as number,
       }))
       .sort((a, b) => (a.time as number) - (b.time as number));
-
-    const chartData = chartDataUnfiltered.filter(c => {
-      const body = Math.abs(c.close - c.open);
-      const wick = c.high - c.low;
-      return body === 0 || wick <= body * 10;
-    });
 
     candlestickSeries.setData(chartData);
 
@@ -121,7 +112,7 @@ export function VolumeDeltaBacktest() {
 
       const isBuy = selectedSignal.direction === 'buy';
 
-      candlestickSeries.setMarkers([{
+      createSeriesMarkers(candlestickSeries, [{
         time: closestCandle.time,
         position: isBuy ? 'belowBar' : 'aboveBar',
         color: isBuy ? '#10b981' : '#ef4444',
