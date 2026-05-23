@@ -396,7 +396,7 @@ def api_backtest_advanced(request: AdvancedBacktestRequest):
         raise HTTPException(status_code=400, detail="At least one entry condition is required.")
     try:
         result = run_advanced_backtest(request)
-        return result
+        return {"candles": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Backtest failed: {str(exc)}")
 
@@ -737,7 +737,7 @@ def api_backtest_fabio(request: FabioBacktestRequest):
         raise HTTPException(status_code=400, detail="At least 80 candles needed for Volume Profile.")
     try:
         result = run_fabio_backtest(request, trained_model=fabio_model)
-        return result
+        return {"candles": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Fabio backtest failed: {str(exc)}")
 
@@ -825,6 +825,8 @@ async def get_candles(
                 continue
             try:
                 df = pd.read_parquet(path)
+                if "symbol" in df.columns:
+                    df = df[~df["symbol"].str.contains("-", na=False)]
                 frames.append(df)
             except Exception:
                 continue
@@ -875,7 +877,7 @@ async def get_candles(
                 "close": float(row['close']),
             })
 
-        return result
+        return {"candles": result}
     except Exception as e:
         print(f"Candles error: {e}")
         return {"candles": [], "error": str(e)}
