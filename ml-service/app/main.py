@@ -827,7 +827,8 @@ async def get_candles(
                 df = pd.read_parquet(path)
                 # Keep only outright contracts, exclude calendar spreads
                 if 'symbol' in df.columns:
-                    df = df[~df['symbol'].str.contains('-', na=False)]
+                    front_month = df['symbol'].value_counts().index[0]
+                    df = df[df['symbol'] == front_month]
                 frames.append(df)
             except Exception:
                 continue
