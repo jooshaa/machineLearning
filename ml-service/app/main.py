@@ -754,19 +754,46 @@ async def backtest_volume_delta():
                 for k, v in signal.items()
             }
 
-        yield '{"signals": ['
-        first = True
-        
         # Accumulate just the lightweight signal dicts for summary calc
         all_signals = []
         
         for chunk in strategy_volume_delta.stream_main():
             all_signals.extend(chunk)
-            for sig in chunk:
-                if not first:
-                    yield ","
-                yield json.dumps(serialize_signal(sig))
-                first = False
+
+        import joblib
+        import os
+        import pandas as pd
+
+        model_path = "models/volume_delta_rf.pkl"
+        if os.path.exists(model_path):
+            model = joblib.load(model_path)
+            for signal in all_signals:
+                try:
+                    entry_dt = pd.to_datetime(signal['entry_time'].replace('Z', ''))
+                    features = [[
+                        entry_dt.hour,
+                        entry_dt.dayofweek,
+                        signal.get('sl_distance', 0),
+                        signal.get('reward_risk', 0),
+                        signal.get('score', 0),
+                        int(signal.get('absorption', False)),
+                        abs(signal.get('tp_price', 0) - signal.get('entry_price', 0))
+                    ]]
+                    prob = model.predict_proba(features)[0][1]
+                    signal['ml_probability'] = round(float(prob), 2)
+                except:
+                    signal['ml_probability'] = None
+        else:
+            for signal in all_signals:
+                signal['ml_probability'] = None
+
+        yield '{"signals": ['
+        first = True
+        for sig in all_signals:
+            if not first:
+                yield ","
+            yield json.dumps(serialize_signal(sig))
+            first = False
                 
         # Calculate summary statistics
         if all_signals:

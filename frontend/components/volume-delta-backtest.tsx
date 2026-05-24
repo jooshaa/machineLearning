@@ -211,6 +211,7 @@ console.log('total candles:', res.candles.length);
                   <th className="px-4 py-2 text-left">SL</th>
                   <th className="px-4 py-2 text-left">Outcome</th>
                   <th className="px-4 py-2 text-left">R</th>
+                  <th className="px-4 py-2 text-left">ML</th>
                 </tr>
               </thead>
               <tbody>
@@ -235,6 +236,14 @@ console.log('total candles:', res.candles.length);
                       </span>
                     </td>
                     <td className="px-4 py-2 font-mono">{signal.r_multiple.toFixed(1)}R</td>
+                    <td className="px-4 py-2 text-xs font-mono">
+                      {signal.ml_probability != null 
+                        ? <span className={signal.ml_probability >= 0.8 ? 'text-emerald-600 font-bold' : signal.ml_probability >= 0.6 ? 'text-amber-500' : 'text-slate-400'}>
+                            {(signal.ml_probability * 100).toFixed(0)}%
+                          </span>
+                        : <span className="text-slate-300">—</span>
+                      }
+                    </td>
                   </tr>
                 ))}
               </tbody>
