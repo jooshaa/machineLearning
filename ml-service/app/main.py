@@ -1146,3 +1146,14 @@ async def get_local_candles(date: str, symbol: str = "NQ"):
         for ts, r in bars.iterrows()
     ]
     return {"candles": candles}
+
+@app.post("/ml/train")
+def ml_train_endpoint():
+    from app.ml_trainer import train_model
+    try:
+        result = train_model()
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(exc)}")
