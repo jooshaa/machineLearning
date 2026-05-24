@@ -548,6 +548,13 @@ def stream_main():
                 
             # Filter immediately for trades
             trades_only = mbo_df[mbo_df['action'] == 'T'].copy()
+
+            # Filter out spread contract trades (prices far from median)
+            median_price = trades_only['price'].median()
+            trades_only = trades_only[
+                (trades_only['price'] > median_price * 0.5) &
+                (trades_only['price'] < median_price * 1.5)
+            ]
             trades_only['delta'] = np.where(trades_only['side'] == 'A', trades_only['size'], -trades_only['size'])
             trades_only['cvd'] = trades_only['delta'].cumsum()
             
