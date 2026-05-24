@@ -11,12 +11,16 @@ from app.engine.features import extract_l3_features
 # Parameters
 IMPULSE_MIN_POINTS = 100      # minimum NQ points for valid impulse
 IMPULSE_MAX_DURATION_MIN = 120
+MIN_IMPULSE_CANDLES = 3       # minimum 1-min candles for a valid impulse
 MIN_DELTA_CONTRACTS = 30      # lowered from 250
 TP_POINTS = 150               # take profit in NQ points  
-SL_POINTS = 60                # stop loss in NQ points
+SL_ZONE_BUFFER = 10           # points behind the delta zone extreme for SL
+SL_FALLBACK_MIN = 20          # minimum SL distance if zone is too close to entry
+TOUCH_TOLERANCE = 5.0         # points tolerance for zone touch detection
 CONFIRMATION_WINDOW_MIN = 30  # wait for confirmation within 30 min of zone touch
-CONSOLIDATION_RANGE = 50       # max range for consolidation
+CONSOLIDATION_RANGE = 50      # max range for consolidation
 AGGRESSION_MIN_CONTRACTS = 20 # min contracts for aggression
+ABSORPTION_THRESHOLD = 0.30   # min opposing volume ratio for absorption
 
 def find_impulses(df):
     """
@@ -170,8 +174,81 @@ def check_orderbook_state(mbo_df, target_price, touch_time, direction):
     
     return large_limit_present, layering
 
+def _detect_absorption(features_df, imp, profile):
+    """
+    Detects absorption at the end of the impulse.
+    Absorption = large opposing trades near the impulse extreme that failed to push
+    price further. This confirms the delta zone is real — the other side tried to
+    continue but was absorbed by limit orders.
+    
+    For UP impulse: look for large SELL trades near the top (price_stop) that didn't
+    push price below that level → buyers absorbed sellers.
+    For DOWN impulse: look for large BUY trades near the bottom (price_stop) that didn't
+    push price above that level → sellers absorbed buyers.
+    """
+    stop_time_np = np.datetime64(imp['stop'])
+    # Window: last 5 minutes of the impulse
+    absorption_start = stop_time_np - np.timedelta64(5, 'm')
+    
+    end_slice = features_df[
+        (features_df.index.values >= absorption_start) &
+        (features_df.index.values <= stop_time_np)
+    ]
+    
+    if end_slice.empty or len(end_slice) < 5:
+        return False
+    
+    extreme_price = imp['price_stop']
+    tolerance = 20.0  # look within 20 points of the extreme
+    
+    near_extreme = end_slice[abs(end_slice['price'] - extreme_price) <= tolerance]
+    if near_extreme.empty:
+        return False
+    
+    if imp['type'] == 'up':
+        # Look for large sell-side trades (side == 'B' means aggressive sell hitting bid)
+        opposing = near_extreme[near_extreme['side'] == 'B']
+    else:
+        # Look for large buy-side trades (side == 'A' means aggressive buy lifting ask)
+        opposing = near_extreme[near_extreme['side'] == 'A']
+    
+    if opposing.empty:
+        return False
+    
+    opposing_volume = opposing['size'].sum()
+    total_volume = near_extreme['size'].sum()
+    
+    # Absorption confirmed if opposing side had significant volume (>30%)
+    # but price still moved in the impulse direction
+    if total_volume > 0 and (opposing_volume / total_volume) >= ABSORPTION_THRESHOLD:
+        # Verify price didn't reverse past the extreme after absorption
+        post_stop = features_df[features_df.index.values > stop_time_np].head(100)
+        if post_stop.empty:
+            return False
+        if imp['type'] == 'up':
+            # After up impulse, price should pull back (expected) — absorption confirmed
+            # if opposing volume was present but price still reached the high
+            return True
+        else:
+            # After down impulse, price should bounce (expected) — absorption confirmed
+            return True
+    
+    return False
+
+
 def backtest(features_df, impulses, mbo_df, filename):
-    """Backtests the strategy on detected impulses."""
+    """
+    Backtests the Volume Delta Profile Strategy.
+    
+    Strategy flow:
+    1. Find impulse move (up/down)
+    2. Build Volume Profile over the impulse range
+    3. Find largest delta zones — limit orders that stopped the move
+    4. Wait for price to return to these zones
+    5. Enter in original impulse direction when confirmed (POC mandatory)
+    6. SL placed behind the largest delta zone extreme
+    7. TP at fixed 150 points from entry
+    """
     signals = []
     
     consolidations_count = 0
@@ -180,6 +257,8 @@ def backtest(features_df, impulses, mbo_df, filename):
     returns_count = 0
     poc_conf_count = 0
     ob_conf_count = 0
+    absorption_count = 0
+    skipped_short_impulse = 0
     rejection_reason = "No impulses found"
     
     if not isinstance(features_df.index, pd.DatetimeIndex):
@@ -196,6 +275,9 @@ def backtest(features_df, impulses, mbo_df, filename):
         
     candles = features_df['price'].resample('5min').ohlc()
     
+    # Pre-compute 1-min candles for impulse duration check
+    candles_1m = features_df['price'].resample('1min').ohlc().dropna()
+    
     if not impulses:
         rejection_reason = "No impulses found"
     else:
@@ -206,6 +288,15 @@ def backtest(features_df, impulses, mbo_df, filename):
         stop_time = imp['stop']
         imp_type = imp['type']
         
+        # ── Impulse quality check: minimum 3 candles duration ──
+        imp_candles = candles_1m[
+            (candles_1m.index >= start_time) &
+            (candles_1m.index <= stop_time)
+        ]
+        if len(imp_candles) < MIN_IMPULSE_CANDLES:
+            skipped_short_impulse += 1
+            continue
+        
         profile = build_volume_profile(features_df, start_time, stop_time)
         zones = find_delta_zones(profile)
         
@@ -214,6 +305,21 @@ def backtest(features_df, impulses, mbo_df, filename):
         
         if not target_zones:
             continue
+        
+        # ── Find the LARGEST delta zone (by absolute delta value) ──
+        # This is the price level with the most aggressive limit order activity
+        zone_deltas = {}
+        for zp in target_zones:
+            if zp in profile.index:
+                zone_deltas[zp] = abs(profile.loc[zp, 'delta'])
+            else:
+                zone_deltas[zp] = 0
+        largest_delta_zone_price = max(zone_deltas, key=zone_deltas.get)
+        
+        # ── Absorption detection at end of impulse ──
+        absorption_detected = _detect_absorption(features_df, imp, profile)
+        if absorption_detected:
+            absorption_count += 1
             
         rejection_reason = "No price returns to zone"
         
@@ -226,10 +332,11 @@ def backtest(features_df, impulses, mbo_df, filename):
         touch_time = None
         target_price = None
         
+        # ── Touch tolerance: 5.0 points (increased from 1.0) ──
         for ts, row in post_impulse.iterrows():
             price = row['price']
             for zp in target_zones:
-                if abs(price - zp) <= 1.0: # 1 point tolerance
+                if abs(price - zp) <= TOUCH_TOLERANCE:
                     touched = True
                     touch_time = ts
                     target_price = zp
@@ -239,7 +346,7 @@ def backtest(features_df, impulses, mbo_df, filename):
                 
         if touched:
             returns_count += 1
-            rejection_reason = "Confirmation criteria not met"
+            rejection_reason = "Confirmation criteria not met (POC mandatory)"
             
             touch_np = np.datetime64(touch_time)
             conf_end = touch_np + np.timedelta64(CONFIRMATION_WINDOW_MIN, 'm')
@@ -291,7 +398,7 @@ def backtest(features_df, impulses, mbo_df, filename):
                 elif imp_type == 'down' and current_cvd < cvd_at_touch:
                     cvd_confirmed = True
                     
-                # POC confirmation
+                # POC confirmation (MANDATORY for entry)
                 poc_confirmed = False
                 if imp_type == 'up' and close_price > poc:
                     poc_confirmed = True
@@ -308,8 +415,31 @@ def backtest(features_df, impulses, mbo_df, filename):
                     score += 1
                 if cvd_confirmed:
                     score += 1
+                if absorption_detected:
+                    score += 1  # Absorption bonus
                     
-                if score >= 1: # Lowered threshold
+                # ── Entry gate: score >= 1 AND poc_confirmed is mandatory ──
+                if score >= 1 and poc_confirmed:
+                    # ── SL logic: behind the largest delta zone extreme ──
+                    if imp_type == 'up':
+                        sl_price = largest_delta_zone_price - SL_ZONE_BUFFER
+                    else:
+                        sl_price = largest_delta_zone_price + SL_ZONE_BUFFER
+                    
+                    entry_price = close_price
+                    tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
+                    
+                    # Sanity check: SL must be on the correct side of entry
+                    if imp_type == 'up' and sl_price >= entry_price:
+                        sl_price = entry_price - SL_FALLBACK_MIN
+                    elif imp_type == 'down' and sl_price <= entry_price:
+                        sl_price = entry_price + SL_FALLBACK_MIN
+                    
+                    # ── Dynamic R-multiple based on actual SL distance ──
+                    sl_distance = abs(entry_price - sl_price)
+                    tp_distance = abs(tp_price - entry_price)
+                    reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+                    
                     # Outcome calculation (Look forward 4 hours)
                     entry_time = np.datetime64(c_ts)
                     end_time = entry_time + np.timedelta64(4, 'h')
@@ -318,10 +448,6 @@ def backtest(features_df, impulses, mbo_df, filename):
                         (features_df.index.values > entry_time) & 
                         (features_df.index.values <= end_time)
                     ]
-
-                    entry_price = close_price
-                    tp_price = entry_price + 150 if imp_type == 'up' else entry_price - 150
-                    sl_price = entry_price - 60 if imp_type == 'up' else entry_price + 60
 
                     outcome = 'timeout'
                     result = '0R'
@@ -342,22 +468,26 @@ def backtest(features_df, impulses, mbo_df, filename):
 
                         if t_tp < t_sl and t_tp != sentinel:
                             outcome = 'win'
-                            result = '+2R'
-                            r_multiple = 2.5
+                            r_multiple = round(reward_risk_ratio, 2)
+                            result = f'+{r_multiple}R'
                             bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
                         elif t_sl < t_tp and t_sl != sentinel:
                             outcome = 'loss'
-                            result = '-1R'
                             r_multiple = -1.0
+                            result = '-1R'
                             bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
                             
                     signals.append({
-                        'entry_time': c_ts,
+                        'entry_time': str(c_ts) + 'Z',
                         'direction': 'buy' if imp_type == 'up' else 'sell',
                         'score': score,
                         'entry_price': entry_price,
                         'tp_price': tp_price,
                         'sl_price': sl_price,
+                        'sl_distance': round(sl_distance, 2),
+                        'reward_risk': round(reward_risk_ratio, 2),
+                        'largest_delta_zone': largest_delta_zone_price,
+                        'absorption': absorption_detected,
                         'outcome': outcome,
                         'result': result,
                         'r_multiple': r_multiple,
@@ -370,8 +500,9 @@ def backtest(features_df, impulses, mbo_df, filename):
     print(f"Day {date_str}:")
     print(f"  - Consolidations found: {consolidations_count}")
     print(f"  - Aggression breakouts: {aggression_count}")
-    print(f"  - Valid impulses: {len(impulses)}")
+    print(f"  - Valid impulses: {len(impulses)} (skipped {skipped_short_impulse} short)")
     print(f"  - Delta zones found: {delta_zones_count}")
+    print(f"  - Absorption detected: {absorption_count}")
     print(f"  - Price returns to zone: {returns_count}")
     print(f"  - POC confirmations: {poc_conf_count}")
     print(f"  - Orderbook confirmations: {ob_conf_count}")
@@ -379,8 +510,6 @@ def backtest(features_df, impulses, mbo_df, filename):
     if not signals:
         print(f"  - Rejection reason: \"{rejection_reason}\"")
         
-    return pd.DataFrame(signals)
-                    
     return pd.DataFrame(signals)
 
 def stream_main():

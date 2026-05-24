@@ -110,7 +110,8 @@ console.log('total candles:', res.candles.length);
 
     candlestickSeries.setData(chartData);
 
-    const entryTs = new Date(selectedSignal.entry_time).getTime() / 1000;
+    const rawEntryTime = selectedSignal.entry_time.replace(' ', 'T');
+    const entryTs = new Date(rawEntryTime.endsWith('Z') ? rawEntryTime : rawEntryTime + 'Z').getTime() / 1000;
     
     if (chartData.length > 0) {
       const closestCandle = chartData.reduce((prev, curr) => 
