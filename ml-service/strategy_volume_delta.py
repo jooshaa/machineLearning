@@ -335,13 +335,10 @@ def backtest(features_df, impulses, mbo_df, filename):
         # ── Touch tolerance: 5.0 points (increased from 1.0) ──
         for ts, row in post_impulse.iterrows():
             price = row['price']
-            for zp in target_zones:
-                if abs(price - zp) <= TOUCH_TOLERANCE:
-                    touched = True
-                    touch_time = ts
-                    target_price = zp
-                    break
-            if touched:
+            if abs(price - largest_delta_zone_price) <= TOUCH_TOLERANCE:
+                touched = True
+                touch_time = ts
+                target_price = largest_delta_zone_price
                 break
                 
         if touched:
@@ -422,18 +419,17 @@ def backtest(features_df, impulses, mbo_df, filename):
                 if score >= 1 and poc_confirmed:
                     # ── SL logic: behind the largest delta zone extreme ──
                     if imp_type == 'up':
-                        sl_price = largest_delta_zone_price - SL_ZONE_BUFFER
+                        sl_price = imp['price_start'] - SL_ZONE_BUFFER
                     else:
-                        sl_price = largest_delta_zone_price + SL_ZONE_BUFFER
+                        sl_price = imp['price_start'] + SL_ZONE_BUFFER
                     
                     entry_price = close_price
                     tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
                     
-                    # Sanity check: SL must be on the correct side of entry
-                    if imp_type == 'up' and sl_price >= entry_price:
-                        sl_price = entry_price - SL_FALLBACK_MIN
-                    elif imp_type == 'down' and sl_price <= entry_price:
-                        sl_price = entry_price + SL_FALLBACK_MIN
+                    if imp_type == 'up':
+                        sl_price = min(sl_price, entry_price - 40)
+                    else:
+                        sl_price = max(sl_price, entry_price + 40)
                     
                     # ── Dynamic R-multiple based on actual SL distance ──
                     sl_distance = abs(entry_price - sl_price)
