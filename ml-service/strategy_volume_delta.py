@@ -290,8 +290,8 @@ def backtest(features_df, impulses, mbo_df, filename):
         
         # ── Impulse quality check: minimum 3 candles duration ──
         imp_candles = candles_1m[
-            (candles_1m.index >= start_time) &
-            (candles_1m.index <= stop_time)
+            (candles_1m.index.values >= np.datetime64(start_time)) &
+            (candles_1m.index.values <= np.datetime64(stop_time))
         ]
         if len(imp_candles) < MIN_IMPULSE_CANDLES:
             skipped_short_impulse += 1
