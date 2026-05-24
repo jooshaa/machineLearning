@@ -186,13 +186,13 @@ def _detect_absorption(features_df, imp, profile):
     For DOWN impulse: look for large BUY trades near the bottom (price_stop) that didn't
     push price above that level → sellers absorbed buyers.
     """
-    stop_time_np = np.datetime64(imp['stop'])
+    end_np = np.datetime64(imp['stop'])
     # Window: last 5 minutes of the impulse
-    absorption_start = stop_time_np - np.timedelta64(5, 'm')
+    start_np = end_np - np.timedelta64(5, 'm')
     
     end_slice = features_df[
-        (features_df.index.values >= absorption_start) &
-        (features_df.index.values <= stop_time_np)
+        (features_df.index.values >= start_np) &
+        (features_df.index.values <= end_np)
     ]
     
     if end_slice.empty or len(end_slice) < 5:
@@ -222,7 +222,7 @@ def _detect_absorption(features_df, imp, profile):
     # but price still moved in the impulse direction
     if total_volume > 0 and (opposing_volume / total_volume) >= ABSORPTION_THRESHOLD:
         # Verify price didn't reverse past the extreme after absorption
-        post_stop = features_df[features_df.index.values > stop_time_np].head(100)
+        post_stop = features_df[features_df.index.values > end_np].head(100)
         if post_stop.empty:
             return False
         if imp['type'] == 'up':
