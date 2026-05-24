@@ -430,6 +430,12 @@ def backtest(features_df, impulses, mbo_df, filename):
                         sl_price = min(sl_price, entry_price - 40)
                     else:
                         sl_price = max(sl_price, entry_price + 40)
+                        
+                    # Enforce maximum SL distance of 120 points
+                    if imp_type == 'up':
+                        sl_price = max(sl_price, entry_price - 120)
+                    else:
+                        sl_price = min(sl_price, entry_price + 120)
                     
                     # ── Dynamic R-multiple based on actual SL distance ──
                     sl_distance = abs(entry_price - sl_price)
