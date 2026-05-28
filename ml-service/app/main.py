@@ -767,25 +767,41 @@ async def backtest_volume_delta():
 
     model_path = "models/volume_delta_rf.pkl"
     if os.path.exists(model_path):
-        model = joblib.load(model_path)
+        import pickle
+        import numpy as np
+        with open(model_path, "rb") as f:
+            model = pickle.load(f)
+        
+        features = ["sl_distance", "reward_risk", "absorption", "hour", "score", "day_of_week", "impulse_points"]
+        
+        filtered_signals = []
         for signal in all_signals:
             try:
                 entry_dt = pd.to_datetime(signal['entry_time'].replace('Z', ''))
-                features = [[
-                    entry_dt.hour,
-                    entry_dt.dayofweek,
-                    signal.get('sl_distance', 0),
-                    signal.get('reward_risk', 0),
-                    signal.get('score', 0),
-                    int(signal.get('absorption', False)),
-                    abs(signal.get('tp_price', 0) - signal.get('entry_price', 0))
-                ]]
-                prob = model.predict_proba(features)[0][1]
-                signal['ml_probability'] = round(float(prob), 2)
+                signal["hour"] = entry_dt.hour
+                signal["day_of_week"] = entry_dt.dayofweek
+                signal["impulse_points"] = abs(signal.get('tp_price', 0) - signal.get('entry_price', 0))
+                signal["absorption"] = int(signal.get('absorption', False))
+
+                X = [[signal.get(f, 0) for f in features]]
+                prediction = model.predict(X)[0]
+                ml_proba = model.predict_proba(X)[0][1]
+                signal["ml_prediction"] = int(prediction)
+                signal["ml_confidence"] = round(float(ml_proba), 3)
+                signal["ml_probability"] = round(float(ml_proba), 3)
+
+                if prediction == 1:  # ML says "win" — keep signal
+                    filtered_signals.append(signal)
             except:
+                signal['ml_prediction'] = None
+                signal['ml_confidence'] = None
                 signal['ml_probability'] = None
+        
+        all_signals = filtered_signals
     else:
         for signal in all_signals:
+            signal['ml_prediction'] = None
+            signal['ml_confidence'] = None
             signal['ml_probability'] = None
 
     # Calculate summary statistics
@@ -805,6 +821,7 @@ async def backtest_volume_delta():
         "losses": losses,
         "timeouts": timeouts,
         "avg_r": avg_r,
+        "ml_filtered": True,
     }
 
     result = {
