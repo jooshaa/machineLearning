@@ -554,6 +554,7 @@ def stream_main():
                 
             # Filter immediately for trades
             trades_only = mbo_df[mbo_df['action'] == 'T'].copy()
+            trades_only['size'] = trades_only['size'].astype('int64')  # prevent uint32 overflow
 
             # Filter out spread contract trades (prices far from median)
             median_price = trades_only['price'].median()

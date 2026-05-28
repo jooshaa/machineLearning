@@ -305,8 +305,8 @@ export class BacktestsService {
     const { fetch: undiciFetch, Agent } = await import('undici');
     
     const agent = new Agent({
-      bodyTimeout: 900000,
-      headersTimeout: 900000,
+      bodyTimeout: 7200000,
+      headersTimeout: 7200000,
       connectTimeout: 30000,
     });
 
