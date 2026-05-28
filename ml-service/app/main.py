@@ -406,7 +406,7 @@ def api_backtest_advanced(request: AdvancedBacktestRequest):
 import json
 import os
 import joblib
-from datetime import datetime
+from datetime import datetime, timezone
 
 FABIO_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
 FABIO_MODEL_PATH = os.path.join(FABIO_DATA_DIR, "fabio_model.joblib")
@@ -741,82 +741,83 @@ def api_backtest_fabio(request: FabioBacktestRequest):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Fabio backtest failed: {str(exc)}")
 
+CACHE_PATH = "data/backtest_cache.json"
+
 @app.post("/backtest-volume-delta")
 async def backtest_volume_delta():
-    from fastapi.responses import StreamingResponse
-    import json
     import pandas as pd
 
-    def generate():
-        def serialize_signal(signal: dict) -> dict:
-            return {
-                k: str(v) if hasattr(v, 'isoformat') else v 
-                for k, v in signal.items()
-            }
+    # Check cache first
+    if os.path.exists(CACHE_PATH):
+        cache_age = datetime.now(timezone.utc).timestamp() - os.path.getmtime(CACHE_PATH)
+        if cache_age < 86400:  # 24 hours
+            with open(CACHE_PATH, 'r') as f:
+                return json.load(f)
 
-        # Accumulate just the lightweight signal dicts for summary calc
-        all_signals = []
-        
-        for chunk in strategy_volume_delta.stream_main():
-            all_signals.extend(chunk)
-
-        import joblib
-        import os
-        import pandas as pd
-
-        model_path = "models/volume_delta_rf.pkl"
-        if os.path.exists(model_path):
-            model = joblib.load(model_path)
-            for signal in all_signals:
-                try:
-                    entry_dt = pd.to_datetime(signal['entry_time'].replace('Z', ''))
-                    features = [[
-                        entry_dt.hour,
-                        entry_dt.dayofweek,
-                        signal.get('sl_distance', 0),
-                        signal.get('reward_risk', 0),
-                        signal.get('score', 0),
-                        int(signal.get('absorption', False)),
-                        abs(signal.get('tp_price', 0) - signal.get('entry_price', 0))
-                    ]]
-                    prob = model.predict_proba(features)[0][1]
-                    signal['ml_probability'] = round(float(prob), 2)
-                except:
-                    signal['ml_probability'] = None
-        else:
-            for signal in all_signals:
-                signal['ml_probability'] = None
-
-        yield '{"signals": ['
-        first = True
-        for sig in all_signals:
-            if not first:
-                yield ","
-            yield json.dumps(serialize_signal(sig))
-            first = False
-                
-        # Calculate summary statistics
-        if all_signals:
-            df = pd.DataFrame(all_signals)
-            wins = len(df[df['outcome'] == 'win'])
-            losses = len(df[df['outcome'] == 'loss'])
-            timeouts = len(df[df['outcome'] == 'timeout'])
-            avg_r = float(df['r_multiple'].mean())
-        else:
-            wins = losses = timeouts = 0
-            avg_r = 0.0
-            
-        summary = {
-            "total": len(all_signals),
-            "wins": wins,
-            "losses": losses,
-            "timeouts": timeouts,
-            "avg_r": avg_r,
+    def serialize_signal(signal: dict) -> dict:
+        return {
+            k: str(v) if hasattr(v, 'isoformat') else v
+            for k, v in signal.items()
         }
-        
-        yield f'], "summary": {json.dumps(summary)}}}'
 
-    return StreamingResponse(generate(), media_type="application/json")
+    # Accumulate signals
+    all_signals = []
+    for chunk in strategy_volume_delta.stream_main():
+        all_signals.extend(chunk)
+
+    model_path = "models/volume_delta_rf.pkl"
+    if os.path.exists(model_path):
+        model = joblib.load(model_path)
+        for signal in all_signals:
+            try:
+                entry_dt = pd.to_datetime(signal['entry_time'].replace('Z', ''))
+                features = [[
+                    entry_dt.hour,
+                    entry_dt.dayofweek,
+                    signal.get('sl_distance', 0),
+                    signal.get('reward_risk', 0),
+                    signal.get('score', 0),
+                    int(signal.get('absorption', False)),
+                    abs(signal.get('tp_price', 0) - signal.get('entry_price', 0))
+                ]]
+                prob = model.predict_proba(features)[0][1]
+                signal['ml_probability'] = round(float(prob), 2)
+            except:
+                signal['ml_probability'] = None
+    else:
+        for signal in all_signals:
+            signal['ml_probability'] = None
+
+    # Calculate summary statistics
+    if all_signals:
+        df = pd.DataFrame(all_signals)
+        wins = len(df[df['outcome'] == 'win'])
+        losses = len(df[df['outcome'] == 'loss'])
+        timeouts = len(df[df['outcome'] == 'timeout'])
+        avg_r = float(df['r_multiple'].mean())
+    else:
+        wins = losses = timeouts = 0
+        avg_r = 0.0
+
+    summary = {
+        "total": len(all_signals),
+        "wins": wins,
+        "losses": losses,
+        "timeouts": timeouts,
+        "avg_r": avg_r,
+    }
+
+    result = {
+        "signals": [serialize_signal(s) for s in all_signals],
+        "summary": summary,
+    }
+
+    # Save to cache
+    os.makedirs("data", exist_ok=True)
+    with open(CACHE_PATH, 'w') as f:
+        json.dump(result, f)
+
+    return result
 
 @app.get("/candles/{date}")
 async def get_candles(

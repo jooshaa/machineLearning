@@ -302,16 +302,24 @@ export class BacktestsService {
   }
 
   async runVolumeDeltaBacktest() {
-    const response = await fetch(`${this.mlServiceUrl}/backtest-volume-delta`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const { fetch: undiciFetch, Agent } = await import('undici');
+    
+    const agent = new Agent({
+      bodyTimeout: 900000,
+      headersTimeout: 900000,
+      connectTimeout: 30000,
     });
 
+    const response = await undiciFetch(`${this.mlServiceUrl}/backtest-volume-delta`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      dispatcher: agent,
+    } as any);
+
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ detail: 'ML service unreachable' }));
+      const error = await response.json().catch(() => ({ detail: 'ML service unreachable' })) as { detail?: string };
       throw new BadRequestException(error.detail ?? 'Volume Delta backtest failed');
     }
-
     return response.json();
   }
 
