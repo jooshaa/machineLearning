@@ -9,11 +9,11 @@ from app.engine.orderbook import process_mbo_stream
 from app.engine.features import extract_l3_features
 
 # Parameters
-IMPULSE_MIN_POINTS = 120      # minimum NQ points for valid impulse (raised for quality)
+IMPULSE_MIN_POINTS = 150      # minimum NQ points for valid impulse (raised to filter small moves)
 IMPULSE_MAX_DURATION_MIN = 120
 MIN_IMPULSE_CANDLES = 3       # minimum 1-min candles for a valid impulse
 MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone (raised)
-TP_POINTS = 150               # take profit in NQ points  
+TP_RR_RATIO = 1.0             # TP = SL distance * this ratio (1:1 RR)
 SL_ZONE_BUFFER = 10           # points behind the delta zone extreme for SL
 SL_FALLBACK_MIN = 20          # minimum SL distance if zone is too close to entry
 TOUCH_TOLERANCE = 5.0         # points tolerance for zone touch detection
@@ -571,8 +571,8 @@ def backtest(features_df, impulses, mbo_df, filename):
                         sl_price = imp['price_start'] + SL_ZONE_BUFFER
                     
                     entry_price = close_price
-                    tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
                     
+                    # Enforce minimum SL distance of 40 points
                     if imp_type == 'up':
                         sl_price = min(sl_price, entry_price - 40)
                     else:
@@ -584,10 +584,11 @@ def backtest(features_df, impulses, mbo_df, filename):
                     else:
                         sl_price = min(sl_price, entry_price + 120)
                     
-                    # ── Dynamic R-multiple based on actual SL distance ──
+                    # ── Dynamic 1:1 RR — TP equals SL distance ──
                     sl_distance = abs(entry_price - sl_price)
-                    tp_distance = abs(tp_price - entry_price)
-                    reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+                    tp_distance = sl_distance * TP_RR_RATIO
+                    tp_price = entry_price + tp_distance if imp_type == 'up' else entry_price - tp_distance
+                    reward_risk_ratio = TP_RR_RATIO
                     
                     # Outcome calculation (Look forward 4 hours)
                     # entry_price = close of the 5-min candle, so entry happens
