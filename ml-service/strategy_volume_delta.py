@@ -438,7 +438,11 @@ def backtest(features_df, impulses, mbo_df, filename):
                     reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
                     
                     # Outcome calculation (Look forward 4 hours)
-                    entry_time = np.datetime64(c_ts)
+                    # entry_price = close of the 5-min candle, so entry happens
+                    # at the END of the candle, not the start. Use c_ts + 5min
+                    # to avoid counting intra-candle ticks as post-entry.
+                    candle_end = np.datetime64(c_ts) + np.timedelta64(5, 'm')
+                    entry_time = candle_end
                     end_time = entry_time + np.timedelta64(4, 'h')
 
                     post_signal = features_df[
