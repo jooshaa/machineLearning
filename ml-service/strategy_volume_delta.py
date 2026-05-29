@@ -23,101 +23,123 @@ ABSORPTION_THRESHOLD = 0.30   # min opposing volume ratio for absorption
 STOPPING_ZONE_PCT = 0.30      # look at last 30% of impulse range for delta zones
 
 # Impulse detection parameters
-IMPULSE_TIMEFRAME = '15min'   # candle timeframe for impulse scanning
-IMPULSE_WINDOW_MIN = 4        # minimum window: 1 hour  (4 × 15min)
-IMPULSE_WINDOW_MAX = 12       # maximum window: 3 hours (12 × 15min)
-IMPULSE_MIN_EFFICIENCY = 0.50 # minimum directional efficiency (0-1)
+IMPULSE_TIMEFRAME = '5min'
+IMPULSE_SWING_N = 5
+IMPULSE_MIN_POINTS = 150
+IMPULSE_MIN_EFFICIENCY = 0.45
+IMPULSE_MIN_MINUTES = 15
+IMPULSE_MAX_MINUTES = 180
 
 def find_impulses(df):
     """
-    Finds real directional impulse moves: 150+ points within 1-3 hours.
-
-    How it works (like footprint charting):
-    1. Resample tick data to 15-min candles
-    2. Slide a window of 1-3 hours across the session
-    3. Within each window, measure the directional move (high-low)
-    4. If move >= 150 points, record it as an impulse
-    5. Determine direction by which extreme came first (low→high = UP, high→low = DOWN)
-    6. Skip overlapping windows — each impulse is unique
-
-    This matches how traders manually identify impulses on footprint/volume charts:
-    price moved from 25200 → 25000 in ~2 hours = clear DOWN impulse of 200 points.
+    Finds impulses using Swing HIGH / LOW with N=5 on 5-min candles.
+    Enforces strict alternation, time constraints, point thresholds, and efficiency.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         if 'ts' in df.columns:
             df = df.set_index('ts')
 
     ohlc = df['price'].resample(IMPULSE_TIMEFRAME).ohlc().dropna()
+    N = IMPULSE_SWING_N
 
-    if len(ohlc) < IMPULSE_WINDOW_MIN:
+    if len(ohlc) < N * 2 + 1:
         return []
 
-    impulses = []
-    last_stop_pos = -1  # prevent overlapping impulses
+    highs = ohlc['high'].values
+    lows  = ohlc['low'].values
+    times = ohlc.index
 
-    for i in range(len(ohlc)):
-        if i <= last_stop_pos:
+    # 1. Find raw swings
+    raw_swings = []
+    for i in range(N, len(ohlc) - N):
+        is_swing_high = all(
+            highs[i] >= highs[i - j] and highs[i] >= highs[i + j]
+            for j in range(1, N + 1)
+        )
+        is_swing_low = all(
+            lows[i] <= lows[i - j] and lows[i] <= lows[i + j]
+            for j in range(1, N + 1)
+        )
+        if is_swing_high:
+            raw_swings.append({'time': times[i], 'price': highs[i], 'type': 'high'})
+        if is_swing_low:
+            raw_swings.append({'time': times[i], 'price': lows[i], 'type': 'low'})
+
+    if len(raw_swings) < 2:
+        return []
+
+    raw_swings.sort(key=lambda s: s['time'])
+
+    # 2. Strict alternation (HIGH -> LOW -> HIGH -> LOW)
+    alternating = [raw_swings[0]]
+    for swing in raw_swings[1:]:
+        prev = alternating[-1]
+        if swing['type'] != prev['type']:
+            alternating.append(swing)
+        else:
+            if swing['type'] == 'high' and swing['price'] > prev['price']:
+                alternating[-1] = swing
+            elif swing['type'] == 'low' and swing['price'] < prev['price']:
+                alternating[-1] = swing
+
+    if len(alternating) < 2:
+        return []
+
+    # 3. Form impulses
+    impulses = []
+    up_count = 0
+    down_count = 0
+
+    for i in range(len(alternating) - 1):
+        a = alternating[i]
+        b = alternating[i + 1]
+        points = abs(b['price'] - a['price'])
+
+        # Min points filter
+        if points < IMPULSE_MIN_POINTS:
             continue
 
-        best_impulse = None
-        best_points = 0
+        time_diff_minutes = (b['time'] - a['time']).total_seconds() / 60.0
 
-        # Try windows from 1h to 3h, keep the one with biggest move
-        for w in range(IMPULSE_WINDOW_MIN, min(IMPULSE_WINDOW_MAX + 1, len(ohlc) - i + 1)):
-            window = ohlc.iloc[i:i + w]
+        # Min/Max time filters
+        if time_diff_minutes < IMPULSE_MIN_MINUTES or time_diff_minutes > IMPULSE_MAX_MINUTES:
+            continue
 
-            high = window['high'].max()
-            low = window['low'].min()
-            points = high - low
+        # Efficiency filter
+        mask = (ohlc.index >= a['time']) & (ohlc.index <= b['time'])
+        window_ohlc = ohlc[mask]
 
-            if points < IMPULSE_MIN_POINTS:
-                continue
+        if window_ohlc.empty:
+            continue
 
-            # ── Efficiency filter: was this a clean directional move? ──
-            # efficiency = net move / total range
-            # Clean impulse: 0.7-1.0 | Choppy range: 0.1-0.3
-            net_move = abs(window['close'].iloc[-1] - window['open'].iloc[0])
-            efficiency = net_move / points if points > 0 else 0
-            if efficiency < IMPULSE_MIN_EFFICIENCY:
-                continue
+        high_of_range = window_ohlc['high'].max()
+        low_of_range = window_ohlc['low'].min()
+        range_points = high_of_range - low_of_range
 
-            # Where did high and low occur in the window?
-            high_time = window['high'].idxmax()
-            low_time = window['low'].idxmin()
+        efficiency = points / range_points if range_points > 0 else 0
+        if efficiency < IMPULSE_MIN_EFFICIENCY:
+            continue
 
-            if low_time < high_time:
-                imp = {
-                    'type': 'up',
-                    'start': low_time,
-                    'stop': high_time,
-                    'price_start': low,
-                    'price_stop': high,
-                    'points': points,
-                    'efficiency': round(efficiency, 2),
-                }
-            else:
-                imp = {
-                    'type': 'down',
-                    'start': high_time,
-                    'stop': low_time,
-                    'price_start': high,
-                    'price_stop': low,
-                    'points': points,
-                    'efficiency': round(efficiency, 2),
-                }
+        if a['type'] == 'low' and b['type'] == 'high':
+            imp_type = 'up'
+            up_count += 1
+        elif a['type'] == 'high' and b['type'] == 'low':
+            imp_type = 'down'
+            down_count += 1
+        else:
+            continue
 
-            # Keep the window that gave the biggest directional move
-            if points > best_points:
-                best_points = points
-                best_impulse = imp
+        impulses.append({
+            'type': imp_type,
+            'start': a['time'],
+            'stop':  b['time'],
+            'price_start': a['price'],
+            'price_stop':  b['price'],
+            'points': points,
+            'efficiency': round(efficiency, 2),
+        })
 
-        if best_impulse:
-            impulses.append(best_impulse)
-            # Skip ahead past this impulse to avoid overlapping
-            stop_pos = ohlc.index.get_loc(best_impulse['stop'])
-            last_stop_pos = stop_pos
-
-    print(f"Found {len(impulses)} impulses ({IMPULSE_TIMEFRAME}, {IMPULSE_MIN_POINTS}+ pts, eff>={IMPULSE_MIN_EFFICIENCY}).")
+    print(f"Found {len(impulses)} valid impulses (UP: {up_count}, DOWN: {down_count}).")
     return impulses
 
 def build_volume_profile(df, start_time, stop_time):
