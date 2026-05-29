@@ -9,10 +9,9 @@ from app.engine.orderbook import process_mbo_stream
 from app.engine.features import extract_l3_features
 
 # Parameters
-IMPULSE_MIN_POINTS = 150      # minimum NQ points for valid impulse (raised to filter small moves)
-IMPULSE_MAX_DURATION_MIN = 120
+IMPULSE_MIN_POINTS = 150      # minimum NQ points for a valid impulse move
 MIN_IMPULSE_CANDLES = 3       # minimum 1-min candles for a valid impulse
-MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone (raised)
+MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone
 TP_RR_RATIO = 1.0             # TP = SL distance * this ratio (1:1 RR)
 SL_ZONE_BUFFER = 10           # points behind the delta zone extreme for SL
 SL_FALLBACK_MIN = 20          # minimum SL distance if zone is too close to entry
@@ -21,101 +20,104 @@ CONFIRMATION_WINDOW_MIN = 30  # wait for confirmation within 30 min of zone touc
 CONSOLIDATION_RANGE = 50      # max range for consolidation
 AGGRESSION_MIN_CONTRACTS = 20 # min contracts for aggression
 ABSORPTION_THRESHOLD = 0.30   # min opposing volume ratio for absorption
-SWING_LOOKBACK = 5            # candles to look left/right for swing detection
-SWING_TIMEFRAME = '15min'     # timeframe for structural swing detection
 STOPPING_ZONE_PCT = 0.30      # look at last 30% of impulse range for delta zones
+
+# Impulse detection parameters
+IMPULSE_TIMEFRAME = '15min'   # candle timeframe for impulse scanning
+IMPULSE_WINDOW_MIN = 4        # minimum window: 1 hour  (4 × 15min)
+IMPULSE_WINDOW_MAX = 12       # maximum window: 3 hours (12 × 15min)
+IMPULSE_MIN_EFFICIENCY = 0.50 # minimum directional efficiency (0-1)
 
 def find_impulses(df):
     """
-    Detects significant structural impulse moves using swing high/low detection.
+    Finds real directional impulse moves: 150+ points within 1-3 hours.
 
-    Improvements over v1:
-    1. Uses 15-min candles for structural significance (less noise than 5-min)
-    2. N=5 lookback — only picks swings that held for 5 bars in each direction
-    3. Enforces strict alternation: high → low → high → low
-       When two highs or two lows appear consecutively, keeps the more extreme one
-    4. Filters by IMPULSE_MIN_POINTS
+    How it works (like footprint charting):
+    1. Resample tick data to 15-min candles
+    2. Slide a window of 1-3 hours across the session
+    3. Within each window, measure the directional move (high-low)
+    4. If move >= 150 points, record it as an impulse
+    5. Determine direction by which extreme came first (low→high = UP, high→low = DOWN)
+    6. Skip overlapping windows — each impulse is unique
+
+    This matches how traders manually identify impulses on footprint/volume charts:
+    price moved from 25200 → 25000 in ~2 hours = clear DOWN impulse of 200 points.
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         if 'ts' in df.columns:
             df = df.set_index('ts')
 
-    ohlc = df['price'].resample(SWING_TIMEFRAME).ohlc().dropna()
+    ohlc = df['price'].resample(IMPULSE_TIMEFRAME).ohlc().dropna()
 
-    if len(ohlc) < SWING_LOOKBACK * 2 + 1:
+    if len(ohlc) < IMPULSE_WINDOW_MIN:
         return []
 
-    highs = ohlc['high'].values
-    lows  = ohlc['low'].values
-    times = ohlc.index
-    N = SWING_LOOKBACK
-
-    # ── Step 1: Find ALL swing highs and lows ──
-    raw_swings = []
-    for i in range(N, len(ohlc) - N):
-        is_swing_high = all(
-            highs[i] >= highs[i - j] and highs[i] >= highs[i + j]
-            for j in range(1, N + 1)
-        )
-        is_swing_low = all(
-            lows[i] <= lows[i - j] and lows[i] <= lows[i + j]
-            for j in range(1, N + 1)
-        )
-        if is_swing_high:
-            raw_swings.append({'time': times[i], 'price': highs[i], 'type': 'high'})
-        if is_swing_low:
-            raw_swings.append({'time': times[i], 'price': lows[i], 'type': 'low'})
-
-    if len(raw_swings) < 2:
-        return []
-
-    # Sort by time (some candles may register both high and low)
-    raw_swings.sort(key=lambda s: s['time'])
-
-    # ── Step 2: Enforce strict alternation (high → low → high → low) ──
-    # When two consecutive swings are the same type, keep the more extreme one
-    alternating = [raw_swings[0]]
-    for swing in raw_swings[1:]:
-        prev = alternating[-1]
-        if swing['type'] != prev['type']:
-            alternating.append(swing)
-        else:
-            # Same type — keep more extreme
-            if swing['type'] == 'high' and swing['price'] > prev['price']:
-                alternating[-1] = swing
-            elif swing['type'] == 'low' and swing['price'] < prev['price']:
-                alternating[-1] = swing
-
-    if len(alternating) < 2:
-        return []
-
-    # ── Step 3: Build impulses from alternating swing pairs ──
     impulses = []
-    for i in range(len(alternating) - 1):
-        a = alternating[i]
-        b = alternating[i + 1]
-        points = abs(b['price'] - a['price'])
+    last_stop_pos = -1  # prevent overlapping impulses
 
-        if points < IMPULSE_MIN_POINTS:
+    for i in range(len(ohlc)):
+        if i <= last_stop_pos:
             continue
 
-        if a['type'] == 'low' and b['type'] == 'high':
-            imp_type = 'up'
-        elif a['type'] == 'high' and b['type'] == 'low':
-            imp_type = 'down'
-        else:
-            continue
+        best_impulse = None
+        best_points = 0
 
-        impulses.append({
-            'type': imp_type,
-            'start': a['time'],
-            'stop':  b['time'],
-            'price_start': a['price'],
-            'price_stop':  b['price'],
-            'points': points,
-        })
+        # Try windows from 1h to 3h, keep the one with biggest move
+        for w in range(IMPULSE_WINDOW_MIN, min(IMPULSE_WINDOW_MAX + 1, len(ohlc) - i + 1)):
+            window = ohlc.iloc[i:i + w]
 
-    print(f"Found {len(impulses)} valid impulses (15min, N={N}, min={IMPULSE_MIN_POINTS}pts).")
+            high = window['high'].max()
+            low = window['low'].min()
+            points = high - low
+
+            if points < IMPULSE_MIN_POINTS:
+                continue
+
+            # ── Efficiency filter: was this a clean directional move? ──
+            # efficiency = net move / total range
+            # Clean impulse: 0.7-1.0 | Choppy range: 0.1-0.3
+            net_move = abs(window['close'].iloc[-1] - window['open'].iloc[0])
+            efficiency = net_move / points if points > 0 else 0
+            if efficiency < IMPULSE_MIN_EFFICIENCY:
+                continue
+
+            # Where did high and low occur in the window?
+            high_time = window['high'].idxmax()
+            low_time = window['low'].idxmin()
+
+            if low_time < high_time:
+                imp = {
+                    'type': 'up',
+                    'start': low_time,
+                    'stop': high_time,
+                    'price_start': low,
+                    'price_stop': high,
+                    'points': points,
+                    'efficiency': round(efficiency, 2),
+                }
+            else:
+                imp = {
+                    'type': 'down',
+                    'start': high_time,
+                    'stop': low_time,
+                    'price_start': high,
+                    'price_stop': low,
+                    'points': points,
+                    'efficiency': round(efficiency, 2),
+                }
+
+            # Keep the window that gave the biggest directional move
+            if points > best_points:
+                best_points = points
+                best_impulse = imp
+
+        if best_impulse:
+            impulses.append(best_impulse)
+            # Skip ahead past this impulse to avoid overlapping
+            stop_pos = ohlc.index.get_loc(best_impulse['stop'])
+            last_stop_pos = stop_pos
+
+    print(f"Found {len(impulses)} impulses ({IMPULSE_TIMEFRAME}, {IMPULSE_MIN_POINTS}+ pts, eff>={IMPULSE_MIN_EFFICIENCY}).")
     return impulses
 
 def build_volume_profile(df, start_time, stop_time):
@@ -140,45 +142,37 @@ def find_delta_zones(profile, impulse):
     """
     Finds institutional delta zones near the STOPPING point of the impulse.
 
-    Key insight: the delta zone that matters is where the impulse STOPPED.
-    That's where institutional limit orders absorbed the aggressive flow and
-    halted the move. Looking at delta across the entire profile dilutes the
-    signal with noise from the body of the impulse.
+    Three layers of institutional confirmation:
+    1. Stopping Zone Delta — largest opposing delta in the last 30% of the range
+    2. POC Shift — is the volume POC in the stopping zone? (institutional absorption)
+    3. Imbalance Ratio — bid/ask volume ratio at the stop (3:1+ = strong)
+    4. Delta Exhaustion — did aggressive flow fade in the second half?
 
-    Improvements over v1:
-    1. Only examines the last 30% of the impulse range (near price_stop)
-    2. Returns the single strongest zone (not a list of all qualifying levels)
-    3. Computes delta exhaustion: did aggressive flow weaken at the extreme?
-
-    Returns dict with:
-      zone_price:       price level of the strongest stopping delta
-      zone_delta:       net delta at that level (signed)
-      zone_volume:      total volume at that level
-      exhaustion:       bool — True if delta was fading at the extreme
-      exhaustion_score: float 0-1, how exhausted the flow was
-      buy_zones / sell_zones: legacy-compatible lists
+    Returns enriched dict with all metrics for downstream scoring.
     """
+    empty_result = {
+        'buy': [], 'sell': [],
+        'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
+        'exhaustion': False, 'exhaustion_score': 0.0,
+        'poc_in_stop_zone': False, 'poc_price': None,
+        'imbalance_ratio': 0.0,
+    }
+
     if profile.empty:
-        return {
-            'buy': [], 'sell': [],
-            'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
-            'exhaustion': False, 'exhaustion_score': 0.0,
-        }
+        return empty_result
 
     price_start = impulse['price_start']
     price_stop  = impulse['price_stop']
     imp_type    = impulse['type']
 
-    # ── Define the stopping zone: last 30% of the impulse range ──
+    # ── 1. Define the stopping zone: last 30% of the impulse range ──
     full_range = abs(price_stop - price_start)
     zone_depth = full_range * STOPPING_ZONE_PCT
 
     if imp_type == 'up':
-        # Up impulse stopped at the top → look at top 30%
         zone_low  = price_stop - zone_depth
-        zone_high = price_stop + 10  # small buffer above
+        zone_high = price_stop + 10
     else:
-        # Down impulse stopped at the bottom → look at bottom 30%
         zone_low  = price_stop - 10
         zone_high = price_stop + zone_depth
 
@@ -187,36 +181,50 @@ def find_delta_zones(profile, impulse):
     ]
 
     if stopping_profile.empty:
-        return {
-            'buy': [], 'sell': [],
-            'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
-            'exhaustion': False, 'exhaustion_score': 0.0,
-        }
+        return empty_result
 
-    # ── Find the level with the strongest OPPOSING delta ──
-    # For up impulse: sellers (negative delta) stopped the move → look for most negative
-    # For down impulse: buyers (positive delta) stopped the move → look for most positive
+    # ── 2. Find the level with the strongest OPPOSING delta ──
     if imp_type == 'up':
-        # Sellers stopped it — find level with most negative delta
         opposing = stopping_profile[stopping_profile['delta'] < -MIN_DELTA_CONTRACTS]
         if not opposing.empty:
-            best_idx = opposing['delta'].idxmin()  # most negative
+            best_idx = opposing['delta'].idxmin()
         else:
             best_idx = stopping_profile['delta'].idxmin()
     else:
-        # Buyers stopped it — find level with most positive delta
         opposing = stopping_profile[stopping_profile['delta'] > MIN_DELTA_CONTRACTS]
         if not opposing.empty:
-            best_idx = opposing['delta'].idxmax()  # most positive
+            best_idx = opposing['delta'].idxmax()
         else:
             best_idx = stopping_profile['delta'].idxmax()
 
     zone_delta  = float(stopping_profile.loc[best_idx, 'delta'])
     zone_volume = float(stopping_profile.loc[best_idx, 'volume'])
 
-    # ── Delta exhaustion detection ──
-    # Split the impulse into first half and second half
-    # If the aggressive side's delta weakened in the second half, they're exhausting
+    # ── 3. POC Shift — is Point of Control in the stopping zone? ──
+    # If the highest-volume price level of the ENTIRE impulse sits in the
+    # stopping zone, it confirms institutional absorption at the extreme.
+    poc_price = float(profile['volume'].idxmax())
+    poc_in_stop_zone = zone_low <= poc_price <= zone_high
+
+    # ── 4. Imbalance Ratio at the stopping zone ──
+    # For DOWN impulse: buyers (positive delta) absorbing sellers → high buy/sell ratio
+    # For UP impulse: sellers (negative delta) absorbing buyers → high sell/buy ratio
+    # We compute: opposing_volume / driving_volume at the stopping zone
+    stop_total_delta = stopping_profile['delta'].sum()
+    stop_total_volume = stopping_profile['volume'].sum()
+
+    # Split volume into buy-side (positive delta) and sell-side (negative delta)
+    positive_delta = stopping_profile[stopping_profile['delta'] > 0]['delta'].sum()
+    negative_delta = abs(stopping_profile[stopping_profile['delta'] < 0]['delta'].sum())
+
+    if imp_type == 'up':
+        # Up impulse → sellers stopped it → sell/buy ratio matters
+        imbalance_ratio = negative_delta / positive_delta if positive_delta > 0 else 0
+    else:
+        # Down impulse → buyers stopped it → buy/sell ratio matters
+        imbalance_ratio = positive_delta / negative_delta if negative_delta > 0 else 0
+
+    # ── 5. Delta exhaustion detection ──
     mid_price = (price_start + price_stop) / 2
 
     if imp_type == 'up':
@@ -229,27 +237,21 @@ def find_delta_zones(profile, impulse):
     first_delta = first_half['delta'].sum() if not first_half.empty else 0
     second_delta = second_half['delta'].sum() if not second_half.empty else 0
 
-    # For up impulse: buyers drive it → positive delta should dominate
-    # Exhaustion = second half has LESS positive (or more negative) delta
-    # For down impulse: sellers drive it → negative delta should dominate
-    # Exhaustion = second half has LESS negative (or more positive) delta
     exhaustion = False
     exhaustion_score = 0.0
 
     if imp_type == 'up' and first_delta > 0:
-        # Buyers weakening: second half delta is less positive
         ratio = second_delta / first_delta if first_delta != 0 else 1.0
-        if ratio < 0.5:  # buyers lost more than half their intensity
+        if ratio < 0.5:
             exhaustion = True
             exhaustion_score = round(1.0 - max(0, min(1, ratio)), 2)
     elif imp_type == 'down' and first_delta < 0:
-        # Sellers weakening: second half delta is less negative
         ratio = second_delta / first_delta if first_delta != 0 else 1.0
-        if ratio < 0.5:  # sellers lost more than half their intensity
+        if ratio < 0.5:
             exhaustion = True
             exhaustion_score = round(1.0 - max(0, min(1, ratio)), 2)
 
-    # ── Legacy-compatible output + enriched data ──
+    # ── Output ──
     meets_threshold = abs(zone_delta) >= MIN_DELTA_CONTRACTS
     buy_zones  = [best_idx] if imp_type == 'up' and meets_threshold else []
     sell_zones = [best_idx] if imp_type == 'down' and meets_threshold else []
@@ -262,6 +264,9 @@ def find_delta_zones(profile, impulse):
         'zone_volume': zone_volume,
         'exhaustion': exhaustion,
         'exhaustion_score': exhaustion_score,
+        'poc_price': poc_price,
+        'poc_in_stop_zone': poc_in_stop_zone,
+        'imbalance_ratio': round(imbalance_ratio, 2),
     }
 
 def check_orderbook_state(mbo_df, target_price, touch_time, direction):
@@ -460,6 +465,8 @@ def backtest(features_df, impulses, mbo_df, filename):
         largest_delta_zone_price = zones['zone_price']
         delta_exhaustion = zones.get('exhaustion', False)
         delta_exhaustion_score = zones.get('exhaustion_score', 0.0)
+        poc_in_stop_zone = zones.get('poc_in_stop_zone', False)
+        imbalance_ratio = zones.get('imbalance_ratio', 0.0)
         
         # ── Absorption detection at end of impulse ──
         absorption_detected = _detect_absorption(features_df, imp, profile)
@@ -561,6 +568,10 @@ def backtest(features_df, impulses, mbo_df, filename):
                     score += 1  # Absorption bonus
                 if delta_exhaustion:
                     score += 1  # Exhaustion bonus — aggressive side faded
+                if poc_in_stop_zone:
+                    score += 1  # POC shift bonus
+                if imbalance_ratio >= 3.0:
+                    score += 1  # Strong imbalance bonus
                     
                 # ── Entry gate: score >= 1 AND poc_confirmed is mandatory ──
                 if score >= 1 and poc_confirmed:
@@ -644,6 +655,8 @@ def backtest(features_df, impulses, mbo_df, filename):
                         'absorption': absorption_detected,
                         'exhaustion': delta_exhaustion,
                         'exhaustion_score': delta_exhaustion_score,
+                        'poc_in_stop_zone': poc_in_stop_zone,
+                        'imbalance_ratio': imbalance_ratio,
                         'outcome': outcome,
                         'result': result,
                         'r_multiple': r_multiple,
