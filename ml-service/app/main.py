@@ -767,10 +767,10 @@ async def backtest_volume_delta():
 
     model_path = "models/volume_delta_rf.pkl"
     if os.path.exists(model_path):
-        import pickle
+        import joblib
         import numpy as np
-        with open(model_path, "rb") as f:
-            model = pickle.load(f)
+
+        model = joblib.load(model_path)
         
         features = ["sl_distance", "reward_risk", "absorption", "hour", "score", "day_of_week", "impulse_points"]
         
