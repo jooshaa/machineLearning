@@ -571,60 +571,59 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             end_time = entry_time + np.timedelta64(4, 'h')
 
-                    post_signal = features_df[
-                        (features_df.index.values > entry_time) & 
-                        (features_df.index.values <= end_time)
-                    ]
+            post_signal = features_df[
+                (features_df.index.values > entry_time) & 
+                (features_df.index.values <= end_time)
+            ]
 
-                    outcome = 'timeout'
-                    result = '0R'
-                    r_multiple = 0.0
-                    bars_to_outcome = 0
+            outcome = 'timeout'
+            result = '0R'
+            r_multiple = 0.0
+            bars_to_outcome = 0
 
-                    if not post_signal.empty:
-                        if imp_type == 'up':
-                            hits_tp = post_signal[post_signal['price'].values >= tp_price]
-                            hits_sl = post_signal[post_signal['price'].values <= sl_price]
-                        else:
-                            hits_tp = post_signal[post_signal['price'].values <= tp_price]
-                            hits_sl = post_signal[post_signal['price'].values >= sl_price]
+            if not post_signal.empty:
+                if imp_type == 'up':
+                    hits_tp = post_signal[post_signal['price'].values >= tp_price]
+                    hits_sl = post_signal[post_signal['price'].values <= sl_price]
+                else:
+                    hits_tp = post_signal[post_signal['price'].values <= tp_price]
+                    hits_sl = post_signal[post_signal['price'].values >= sl_price]
 
-                        sentinel = np.datetime64('2100-01-01')
-                        t_tp = hits_tp.index.values[0] if not hits_tp.empty else sentinel
-                        t_sl = hits_sl.index.values[0] if not hits_sl.empty else sentinel
+                sentinel = np.datetime64('2100-01-01')
+                t_tp = hits_tp.index.values[0] if not hits_tp.empty else sentinel
+                t_sl = hits_sl.index.values[0] if not hits_sl.empty else sentinel
 
-                        if t_tp < t_sl and t_tp != sentinel:
-                            outcome = 'win'
-                            r_multiple = round(reward_risk_ratio, 2)
-                            result = f'+{r_multiple}R'
-                            bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
-                        elif t_sl < t_tp and t_sl != sentinel:
-                            outcome = 'loss'
-                            r_multiple = -1.0
-                            result = '-1R'
-                            bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
-                            
-                    signals.append({
-                        'entry_time': str(c_ts) + 'Z',
-                        'direction': 'buy' if imp_type == 'up' else 'sell',
-                        'score': score,
-                        'entry_price': entry_price,
-                        'tp_price': tp_price,
-                        'sl_price': sl_price,
-                        'sl_distance': round(sl_distance, 2),
-                        'reward_risk': round(reward_risk_ratio, 2),
-                        'largest_delta_zone': largest_delta_zone_price,
-                        'absorption': absorption_detected,
-                        'exhaustion': delta_exhaustion,
-                        'exhaustion_score': delta_exhaustion_score,
-                        'poc_in_stop_zone': poc_in_stop_zone,
-                        'imbalance_ratio': imbalance_ratio,
-                        'outcome': outcome,
-                        'result': result,
-                        'r_multiple': r_multiple,
-                        'bars_to_outcome': bars_to_outcome
-                    })
-                    break
+                if t_tp < t_sl and t_tp != sentinel:
+                    outcome = 'win'
+                    r_multiple = round(reward_risk_ratio, 2)
+                    result = f'+{r_multiple}R'
+                    bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
+                elif t_sl < t_tp and t_sl != sentinel:
+                    outcome = 'loss'
+                    r_multiple = -1.0
+                    result = '-1R'
+                    bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
+                    
+            signals.append({
+                'entry_time': str(touch_time) + 'Z',
+                'direction': 'buy' if imp_type == 'up' else 'sell',
+                'entry_price': entry_price,
+                'tp_price': tp_price,
+                'sl_price': sl_price,
+                'sl_distance': round(sl_distance, 2),
+                'reward_risk': round(reward_risk_ratio, 2),
+                'largest_delta_zone': largest_delta_zone_price,
+                'absorption': absorption_detected,
+                'exhaustion': delta_exhaustion,
+                'exhaustion_score': delta_exhaustion_score,
+                'poc_in_stop_zone': poc_in_stop_zone,
+                'imbalance_ratio': imbalance_ratio,
+                'outcome': outcome,
+                'result': result,
+                'r_multiple': r_multiple,
+                'bars_to_outcome': bars_to_outcome
+            })
+            break
                     
     # Print step-by-step debug for the day
     date_str = filename.replace(".parquet", "")
