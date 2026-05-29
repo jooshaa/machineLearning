@@ -23,68 +23,63 @@ AGGRESSION_MIN_CONTRACTS = 20 # min contracts for aggression
 ABSORPTION_THRESHOLD = 0.30   # min opposing volume ratio for absorption
 
 def find_impulses(df):
-    """
-    Detects impulse moves from features data.
-    df must have 'price' and 'ts' (or index as datetime).
-    """
-    # Resample to 1-min candles for easier impulse detection
     if not isinstance(df.index, pd.DatetimeIndex):
         if 'ts' in df.columns:
             df = df.set_index('ts')
-        else:
-            df.index = pd.to_datetime(df.index)
-            
-    ohlc = df['price'].resample('1min').ohlc()
-    ohlc.dropna(inplace=True)
+    
+    ohlc = df['price'].resample('5min').ohlc().dropna()
+    
+    if len(ohlc) < 5:
+        return []
+    
+    highs = ohlc['high'].values
+    lows  = ohlc['low'].values
+    times = ohlc.index
+    
+    swing_points = []
+    N = 2
+    for i in range(N, len(ohlc) - N):
+        is_swing_high = all(highs[i] >= highs[i-j] and highs[i] >= highs[i+j] for j in range(1, N+1))
+        is_swing_low  = all(lows[i]  <= lows[i-j]  and lows[i]  <= lows[i+j]  for j in range(1, N+1))
+        if is_swing_high:
+            swing_points.append({'time': times[i], 'price': highs[i], 'type': 'high'})
+        elif is_swing_low:
+            swing_points.append({'time': times[i], 'price': lows[i],  'type': 'low'})
+    
+    if len(swing_points) < 2:
+        return []
     
     impulses = []
-    window_size = IMPULSE_MAX_DURATION_MIN
-    
-    for i in range(len(ohlc)):
-        window = ohlc.iloc[i : i + window_size]
-        if len(window) < 2:
-            continue
-            
-        min_price = window['low'].min()
-        max_price = window['high'].max()
+    for i in range(len(swing_points) - 1):
+        a = swing_points[i]
+        b = swing_points[i + 1]
+        points = abs(b['price'] - a['price'])
         
-        if max_price - min_price >= IMPULSE_MIN_POINTS:
-            min_idx = window['low'].argmin()
-            max_idx = window['high'].argmax()
-            
-            if min_idx < max_idx: # Upward impulse
-                start_time = window.index[min_idx]
-                stop_time = window.index[max_idx]
-                impulses.append({
-                    'type': 'up',
-                    'start': start_time,
-                    'stop': stop_time,
-                    'price_start': min_price,
-                    'price_stop': max_price,
-                    'points': max_price - min_price
-                })
-            elif max_idx < min_idx: # Downward impulse
-                start_time = window.index[max_idx]
-                stop_time = window.index[min_idx]
-                impulses.append({
-                    'type': 'down',
-                    'start': start_time,
-                    'stop': stop_time,
-                    'price_start': max_price,
-                    'price_stop': min_price,
-                    'points': max_price - min_price
-                })
-                
-    # Filter overlapping impulses (keep the first non-overlapping)
-    filtered = []
-    last_stop = None
-    for imp in impulses:
-        if last_stop is None or imp['start'] > last_stop:
-            filtered.append(imp)
-            last_stop = imp['stop']
-            
-    print(f"Found {len(filtered)} valid impulses.")
-    return filtered
+        if points < IMPULSE_MIN_POINTS:
+            continue
+        
+        if a['type'] == 'low' and b['type'] == 'high':
+            imp_type = 'up'
+            price_start = a['price']
+            price_stop  = b['price']
+        elif a['type'] == 'high' and b['type'] == 'low':
+            imp_type = 'down'
+            price_start = a['price']
+            price_stop  = b['price']
+        else:
+            continue
+        
+        impulses.append({
+            'type': imp_type,
+            'start': a['time'],
+            'stop':  b['time'],
+            'price_start': price_start,
+            'price_stop':  price_stop,
+            'points': points
+        })
+    
+    print(f"Found {len(impulses)} valid impulses.")
+    return impulses
 
 def build_volume_profile(df, start_time, stop_time):
     """Builds volume and delta profile on impulse range."""

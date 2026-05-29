@@ -215,86 +215,92 @@ console.log('total candles:', res.candles.length);
                 </tr>
               </thead>
               <tbody>
-                {result.signals.map((signal: any, index: number) => (
-                  <tr
-                    key={index}
-                    className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${selectedSignal === signal ? 'bg-indigo-50 border-l-2 border-l-indigo-400' : ''}`}
-                    onClick={() => setSelectedSignal(signal)}
-                  >
-                    <td className="px-4 py-2 font-mono text-xs">{signal.entry_time}</td>
-                    <td className="px-4 py-2">
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${signal.direction === 'buy' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
-                        {signal.direction.toUpperCase()}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 font-mono">{signal.entry_price.toFixed(2)}</td>
-                    <td className="px-4 py-2 font-mono text-emerald-600">{signal.tp_price.toFixed(2)}</td>
-                    <td className="px-4 py-2 font-mono text-rose-600">{signal.sl_price.toFixed(2)}</td>
-                    <td className="px-4 py-2">
-                      <span className={`capitalize font-medium ${signal.outcome === 'win' ? 'text-emerald-600' : signal.outcome === 'loss' ? 'text-rose-600' : 'text-slate-400'}`}>
-                        {signal.outcome}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 font-mono">{signal.r_multiple.toFixed(1)}R</td>
-                    <td className="px-4 py-2 text-xs font-mono">
-                      {signal.ml_probability != null 
-                        ? <span className={signal.ml_probability >= 0.8 ? 'text-emerald-600 font-bold' : signal.ml_probability >= 0.6 ? 'text-amber-500' : 'text-slate-400'}>
-                            {(signal.ml_probability * 100).toFixed(0)}%
+                {result.signals.map((signal: any, index: number) => {
+                  const isSelected = selectedSignal === signal;
+                  return (
+                    <React.Fragment key={index}>
+                      <tr
+                        className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 transition-colors ${isSelected ? 'bg-indigo-50 border-l-2 border-l-indigo-400' : ''}`}
+                        onClick={() => setSelectedSignal(isSelected ? null : signal)}
+                      >
+                        <td className="px-4 py-2 font-mono text-xs">{signal.entry_time}</td>
+                        <td className="px-4 py-2">
+                          <span className={`px-2 py-0.5 rounded text-xs font-medium ${signal.direction === 'buy' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>
+                            {signal.direction.toUpperCase()}
                           </span>
-                        : <span className="text-slate-300">—</span>
-                      }
-                    </td>
-                  </tr>
-                ))}
+                        </td>
+                        <td className="px-4 py-2 font-mono">{signal.entry_price.toFixed(2)}</td>
+                        <td className="px-4 py-2 font-mono text-emerald-600">{signal.tp_price.toFixed(2)}</td>
+                        <td className="px-4 py-2 font-mono text-rose-600">{signal.sl_price.toFixed(2)}</td>
+                        <td className="px-4 py-2">
+                          <span className={`capitalize font-medium ${signal.outcome === 'win' ? 'text-emerald-600' : signal.outcome === 'loss' ? 'text-rose-600' : 'text-slate-400'}`}>
+                            {signal.outcome}
+                          </span>
+                        </td>
+                        <td className="px-4 py-2 font-mono">{signal.r_multiple.toFixed(1)}R</td>
+                        <td className="px-4 py-2 text-xs font-mono">
+                          {signal.ml_probability != null 
+                            ? <span className={signal.ml_probability >= 0.8 ? 'text-emerald-600 font-bold' : signal.ml_probability >= 0.6 ? 'text-amber-500' : 'text-slate-400'}>
+                                {(signal.ml_probability * 100).toFixed(0)}%
+                              </span>
+                            : <span className="text-slate-300">—</span>
+                          }
+                        </td>
+                      </tr>
+                      {isSelected && (
+                        <tr className="bg-slate-50/80">
+                          <td colSpan={8} className="p-0 border-b-2 border-indigo-100">
+                            <div className="p-6">
+                              <div className="flex justify-between items-start mb-4 flex-wrap gap-3">
+                                <div>
+                                  <h3 className="text-lg font-bold">
+                                    {signal.direction === 'buy' ? '🟢' : '🔴'} {signal.direction.toUpperCase()} @ {signal.entry_price.toFixed(2)}
+                                  </h3>
+                                  <p className="text-sm text-slate-500">
+                                    {signal.entry_time} &nbsp;·&nbsp;
+                                    <span className="text-emerald-600">TP {signal.tp_price.toFixed(2)}</span>
+                                    &nbsp;·&nbsp;
+                                    <span className="text-rose-600">SL {signal.sl_price.toFixed(2)}</span>
+                                    &nbsp;·&nbsp;
+                                    <span className={signal.outcome === 'win' ? 'text-emerald-600 font-semibold' : signal.outcome === 'loss' ? 'text-rose-600 font-semibold' : 'text-slate-400'}>
+                                      {signal.outcome.toUpperCase()} {signal.r_multiple.toFixed(1)}R
+                                    </span>
+                                  </p>
+                                </div>
+
+                                <div className="flex items-center gap-1 bg-white rounded-lg p-1 shadow-sm border border-slate-200">
+                                  {TIMEFRAMES.map(tf => (
+                                    <button
+                                      key={tf}
+                                      onClick={() => setTimeframe(tf)}
+                                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
+                                        timeframe === tf
+                                          ? 'bg-indigo-50 text-indigo-600'
+                                          : 'text-slate-500 hover:text-slate-700'
+                                      }`}
+                                    >
+                                      {tf}
+                                    </button>
+                                  ))}
+                                  {chartLoading && <span className="text-xs text-slate-400 ml-2">Loading...</span>}
+                                </div>
+                              </div>
+
+                              <div
+                                ref={chartContainerRef}
+                                className="w-full bg-white rounded-lg border border-slate-200 shadow-sm"
+                                style={{ minHeight: '420px' }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
-
-          {selectedSignal && (
-            <div className="mt-6 border-t border-slate-100 pt-6">
-              <div className="flex justify-between items-start mb-4 flex-wrap gap-3">
-                <div>
-                  <h3 className="text-lg font-bold">
-                    {selectedSignal.direction === 'buy' ? '🟢' : '🔴'} {selectedSignal.direction.toUpperCase()} @ {selectedSignal.entry_price.toFixed(2)}
-                  </h3>
-                  <p className="text-sm text-slate-500">
-                    {selectedSignal.entry_time} &nbsp;·&nbsp;
-                    <span className="text-emerald-600">TP {selectedSignal.tp_price.toFixed(2)}</span>
-                    &nbsp;·&nbsp;
-                    <span className="text-rose-600">SL {selectedSignal.sl_price.toFixed(2)}</span>
-                    &nbsp;·&nbsp;
-                    <span className={selectedSignal.outcome === 'win' ? 'text-emerald-600 font-semibold' : selectedSignal.outcome === 'loss' ? 'text-rose-600 font-semibold' : 'text-slate-400'}>
-                      {selectedSignal.outcome.toUpperCase()} {selectedSignal.r_multiple.toFixed(1)}R
-                    </span>
-                  </p>
-                </div>
-
-                {/* Fix 3 — Timeframe switcher */}
-                <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
-                  {TIMEFRAMES.map(tf => (
-                    <button
-                      key={tf}
-                      onClick={() => setTimeframe(tf)}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${
-                        timeframe === tf
-                          ? 'bg-white text-indigo-600 shadow-sm'
-                          : 'text-slate-500 hover:text-slate-700'
-                      }`}
-                    >
-                      {tf}
-                    </button>
-                  ))}
-                  {chartLoading && <span className="text-xs text-slate-400 ml-2">Loading...</span>}
-                </div>
-              </div>
-
-              <div
-                ref={chartContainerRef}
-                className="w-full bg-white rounded-lg border border-slate-100"
-                style={{ minHeight: '420px' }}
-              />
-            </div>
-          )}
         </div>
       )}
     </div>
