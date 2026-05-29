@@ -504,132 +504,72 @@ def backtest(features_df, impulses, mbo_df, filename):
             
         touched = False
         touch_time = None
-        target_price = None
+        target_price = largest_delta_zone_price
+        entry_price = None
         
-        # ── Touch tolerance: 5.0 points (increased from 1.0) ──
+        in_zone = False
+        first_touch_skipped = False
+        
+        # ── Find zone touches (tolerance ±5.0 points) ──
         for ts, row in post_impulse.iterrows():
             price = row['price']
-            if abs(price - largest_delta_zone_price) <= TOUCH_TOLERANCE:
-                touched = True
-                touch_time = ts
-                target_price = largest_delta_zone_price
-                break
+            is_in_zone = abs(price - target_price) <= TOUCH_TOLERANCE
+            
+            if is_in_zone and not in_zone:
+                # We just ENTERED the zone
+                in_zone = True
+                touch_np = np.datetime64(ts)
+                
+                # Check return speed filter (count 5-min candles between stop and touch)
+                bars_between = candles[
+                    (candles.index.values > stop_time_np) &
+                    (candles.index.values <= touch_np)
+                ]
+                
+                if len(bars_between) < 3 and not first_touch_skipped:
+                    # Too fast, skip this first touch
+                    first_touch_skipped = True
+                    continue
+                else:
+                    # Valid touch (either >= 3 bars, or it's the second touch)
+                    touched = True
+                    touch_time = ts
+                    entry_price = price
+                    break
+            elif not is_in_zone:
+                in_zone = False
                 
         if touched:
             returns_count += 1
-            rejection_reason = "Confirmation criteria not met (POC mandatory)"
             
-            touch_np = np.datetime64(touch_time)
-            conf_end = touch_np + np.timedelta64(CONFIRMATION_WINDOW_MIN, 'm')
-            conf_window = post_impulse[
-                (post_impulse.index.values > touch_np) & 
-                (post_impulse.index.values <= conf_end)
-            ]
+            # ── SL logic: behind the impulse start ──
+            if imp_type == 'up':
+                sl_price = imp['price_start'] - SL_ZONE_BUFFER
+            else:
+                sl_price = imp['price_start'] + SL_ZONE_BUFFER
             
-            if conf_window.empty:
-                continue
+            # Enforce minimum SL distance of 40 points
+            if imp_type == 'up':
+                sl_price = min(sl_price, entry_price - 40)
+            else:
+                sl_price = max(sl_price, entry_price + 40)
                 
-            window_candles = candles[
-                (candles.index.values > touch_np) & 
-                (candles.index.values <= conf_end)
-            ]
+            # Enforce maximum SL distance of 120 points
+            if imp_type == 'up':
+                sl_price = max(sl_price, entry_price - 120)
+            else:
+                sl_price = min(sl_price, entry_price + 120)
             
-            # Orderbook confirmation at touch (slice 5min window around touch time)
-            mbo_start = touch_np - np.timedelta64(5, 'm')
-            mbo_end = touch_np + np.timedelta64(5, 'm')
-            mbo_slice = mbo_df[
-                (mbo_df.index.values >= mbo_start) & 
-                (mbo_df.index.values <= mbo_end)
-            ]
+            # ── Dynamic 1:1 RR — TP equals SL distance ──
+            sl_distance = abs(entry_price - sl_price)
+            tp_distance = sl_distance * TP_RR_RATIO
+            tp_price = entry_price + tp_distance if imp_type == 'up' else entry_price - tp_distance
+            reward_risk_ratio = TP_RR_RATIO
             
-            large_limit_present, layering = check_orderbook_state(mbo_slice, target_price, touch_time, imp_type)
-            if large_limit_present:
-                ob_conf_count += 1
-                
-            for c_ts, c_row in window_candles.iterrows():
-                c_ts_np = np.datetime64(c_ts)
-                c_trades = features_df[
-                    (features_df.index.values >= c_ts_np) & 
-                    (features_df.index.values < c_ts_np + np.timedelta64(5, 'm'))
-                ]
-                if c_trades.empty:
-                    continue
-                poc = c_trades.groupby('price')['size'].sum().idxmax()
-                
-                close_price = c_row['close']
-                
-                # CVD confirmation
-                cvd_slice = conf_window[conf_window.index.values <= c_ts_np]
-                cvd_at_touch = cvd_slice['cvd'].iloc[-1] if not cvd_slice.empty else 0
-                current_cvd = c_trades['cvd'].iloc[-1] if 'cvd' in c_trades.columns else 0
-                
-                cvd_confirmed = False
-                if imp_type == 'up' and current_cvd > cvd_at_touch:
-                    cvd_confirmed = True
-                elif imp_type == 'down' and current_cvd < cvd_at_touch:
-                    cvd_confirmed = True
-                    
-                # POC confirmation (MANDATORY for entry)
-                poc_confirmed = False
-                if imp_type == 'up' and close_price > poc:
-                    poc_confirmed = True
-                    poc_conf_count += 1
-                elif imp_type == 'down' and close_price < poc:
-                    poc_confirmed = True
-                    poc_conf_count += 1
-                    
-                # Scoring
-                score = 0
-                if poc_confirmed:
-                    score += 1
-                if large_limit_present:
-                    score += 1
-                if cvd_confirmed:
-                    score += 1
-                if absorption_detected:
-                    score += 1  # Absorption bonus
-                if delta_exhaustion:
-                    score += 1  # Exhaustion bonus — aggressive side faded
-                if poc_in_stop_zone:
-                    score += 1  # POC shift bonus
-                if imbalance_ratio >= 3.0:
-                    score += 1  # Strong imbalance bonus
-                    
-                # ── Entry gate: score >= 1 AND poc_confirmed is mandatory ──
-                if score >= 1 and poc_confirmed:
-                    # ── SL logic: behind the largest delta zone extreme ──
-                    if imp_type == 'up':
-                        sl_price = imp['price_start'] - SL_ZONE_BUFFER
-                    else:
-                        sl_price = imp['price_start'] + SL_ZONE_BUFFER
-                    
-                    entry_price = close_price
-                    
-                    # Enforce minimum SL distance of 40 points
-                    if imp_type == 'up':
-                        sl_price = min(sl_price, entry_price - 40)
-                    else:
-                        sl_price = max(sl_price, entry_price + 40)
-                        
-                    # Enforce maximum SL distance of 120 points
-                    if imp_type == 'up':
-                        sl_price = max(sl_price, entry_price - 120)
-                    else:
-                        sl_price = min(sl_price, entry_price + 120)
-                    
-                    # ── Dynamic 1:1 RR — TP equals SL distance ──
-                    sl_distance = abs(entry_price - sl_price)
-                    tp_distance = sl_distance * TP_RR_RATIO
-                    tp_price = entry_price + tp_distance if imp_type == 'up' else entry_price - tp_distance
-                    reward_risk_ratio = TP_RR_RATIO
-                    
-                    # Outcome calculation (Look forward 4 hours)
-                    # entry_price = close of the 5-min candle, so entry happens
-                    # at the END of the candle, not the start. Use c_ts + 5min
-                    # to avoid counting intra-candle ticks as post-entry.
-                    candle_end = np.datetime64(c_ts) + np.timedelta64(5, 'm')
-                    entry_time = candle_end
-                    end_time = entry_time + np.timedelta64(4, 'h')
+            # Outcome calculation (Look forward 4 hours)
+            # Entry happens at the exact tick we touched the zone
+            entry_time = np.datetime64(touch_time)
+            end_time = entry_time + np.timedelta64(4, 'h')
 
                     post_signal = features_df[
                         (features_df.index.values > entry_time) & 
