@@ -50,7 +50,7 @@ def find_impulses(df):
     times = ohlc.index
     N = SWING_LOOKBACK
 
-    # ── Step 1: Find ALL swing highs and lows ──
+    
     raw_swings = []
     for i in range(N, len(ohlc) - N):
         is_swing_high = all(
@@ -69,11 +69,10 @@ def find_impulses(df):
     if len(raw_swings) < 2:
         return []
 
-    # Sort by time (some candles may register both high and low)
+    
     raw_swings.sort(key=lambda s: s['time'])
 
-    # ── Step 2: Enforce strict alternation (high → low → high → low) ──
-    # When two consecutive swings are the same type, keep the more extreme one
+  
     alternating = [raw_swings[0]]
     for swing in raw_swings[1:]:
         prev = alternating[-1]
