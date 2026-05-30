@@ -549,7 +549,7 @@ def backtest(features_df, impulses, mbo_df, filename):
 def stream_main():
     print("🚀 Starting Volume Delta Profile Strategy Backtest (Stream Mode)...")
     
-    cache_dir = "data/raw/mbo/NQ/NQ"
+    cache_dir = "data/raw/mbo/NQ"
     if not os.path.exists(cache_dir):
         print(f"Cache directory {cache_dir} missing. Creating mock data for demonstration.")
         create_mock_data()
