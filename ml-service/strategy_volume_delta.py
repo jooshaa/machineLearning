@@ -616,8 +616,8 @@ def backtest(features_df, impulses, mbo_df, filename):
                             hits_sl = post_signal[post_signal['price'].values >= sl_price]
 
                         sentinel = np.datetime64('2100-01-01')
-                        t_tp = hits_tp.index.values[0] if not hits_tp.empty else sentinel
-                        t_sl = hits_sl.index.values[0] if not hits_sl.empty else sentinel
+                        t_tp = hits_tp.index.values.min() if not hits_tp.empty else sentinel
+                        t_sl = hits_sl.index.values.min() if not hits_sl.empty else sentinel
 
                         if t_tp < t_sl and t_tp != sentinel:
                             outcome = 'win'
@@ -629,6 +629,18 @@ def backtest(features_df, impulses, mbo_df, filename):
                             r_multiple = -1.0
                             result = '-1R'
                             bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
+                            
+                    if imp_type != 'up':
+                        print(f"\nSELL AUDIT: entry={entry_price:.2f}, tp={tp_price:.2f}, sl={sl_price:.2f}")
+                        print(f"  tp < entry: {tp_price < entry_price}, sl > entry: {sl_price > entry_price}")
+                        print(f"  post_signal rows: {len(post_signal)}")
+                        if not post_signal.empty:
+                            print(f"  price range: {post_signal['price'].min():.2f} - {post_signal['price'].max():.2f}")
+                            print(f"  hits_tp count: {len(post_signal[post_signal['price'].values <= tp_price])}")
+                            print(f"  hits_sl count: {len(post_signal[post_signal['price'].values >= sl_price])}")
+                            print(f"  outcome: {outcome}")
+                        print(f"  t_tp: {t_tp if t_tp != sentinel else 'never'}")
+                        print(f"  t_sl: {t_sl if t_sl != sentinel else 'never'}")
                             
                     signals.append({
                         'entry_time': str(c_ts) + 'Z',
