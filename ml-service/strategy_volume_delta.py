@@ -9,10 +9,11 @@ from app.engine.orderbook import process_mbo_stream
 from app.engine.features import extract_l3_features
 
 # Parameters
-IMPULSE_MIN_POINTS = 150      # minimum NQ points for a valid impulse move
+IMPULSE_MIN_POINTS = 120      # minimum NQ points for valid impulse (raised for quality)
+IMPULSE_MAX_DURATION_MIN = 120
 MIN_IMPULSE_CANDLES = 3       # minimum 1-min candles for a valid impulse
-MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone
-TP_RR_RATIO = 1.0             # TP = SL distance * this ratio (1:1 RR)
+MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone (raised)
+TP_POINTS = 150               # take profit in NQ points  
 SL_ZONE_BUFFER = 10           # points behind the delta zone extreme for SL
 SL_FALLBACK_MIN = 20          # minimum SL distance if zone is too close to entry
 TOUCH_TOLERANCE = 5.0         # points tolerance for zone touch detection
@@ -20,36 +21,36 @@ CONFIRMATION_WINDOW_MIN = 30  # wait for confirmation within 30 min of zone touc
 CONSOLIDATION_RANGE = 50      # max range for consolidation
 AGGRESSION_MIN_CONTRACTS = 20 # min contracts for aggression
 ABSORPTION_THRESHOLD = 0.30   # min opposing volume ratio for absorption
+SWING_LOOKBACK = 5            # candles to look left/right for swing detection
+SWING_TIMEFRAME = '15min'     # timeframe for structural swing detection
 STOPPING_ZONE_PCT = 0.30      # look at last 30% of impulse range for delta zones
-
-# Impulse detection parameters
-IMPULSE_TIMEFRAME = '5min'
-IMPULSE_SWING_N = 5
-IMPULSE_MIN_POINTS = 150
-IMPULSE_MIN_EFFICIENCY = 0.45
-IMPULSE_MIN_MINUTES = 15
-IMPULSE_MAX_MINUTES = 180
 
 def find_impulses(df):
     """
-    Finds impulses using Swing HIGH / LOW with N=5 on 5-min candles.
-    Enforces strict alternation, time constraints, point thresholds, and efficiency.
+    Detects significant structural impulse moves using swing high/low detection.
+
+    Improvements over v1:
+    1. Uses 15-min candles for structural significance (less noise than 5-min)
+    2. N=5 lookback — only picks swings that held for 5 bars in each direction
+    3. Enforces strict alternation: high → low → high → low
+       When two highs or two lows appear consecutively, keeps the more extreme one
+    4. Filters by IMPULSE_MIN_POINTS
     """
     if not isinstance(df.index, pd.DatetimeIndex):
         if 'ts' in df.columns:
             df = df.set_index('ts')
 
-    ohlc = df['price'].resample(IMPULSE_TIMEFRAME).ohlc().dropna()
-    N = IMPULSE_SWING_N
+    ohlc = df['price'].resample(SWING_TIMEFRAME).ohlc().dropna()
 
-    if len(ohlc) < N * 2 + 1:
+    if len(ohlc) < SWING_LOOKBACK * 2 + 1:
         return []
 
     highs = ohlc['high'].values
     lows  = ohlc['low'].values
     times = ohlc.index
+    N = SWING_LOOKBACK
 
-    # 1. Find raw swings
+    # ── Step 1: Find ALL swing highs and lows ──
     raw_swings = []
     for i in range(N, len(ohlc) - N):
         is_swing_high = all(
@@ -68,15 +69,18 @@ def find_impulses(df):
     if len(raw_swings) < 2:
         return []
 
+    # Sort by time (some candles may register both high and low)
     raw_swings.sort(key=lambda s: s['time'])
 
-    # 2. Strict alternation (HIGH -> LOW -> HIGH -> LOW)
+    # ── Step 2: Enforce strict alternation (high → low → high → low) ──
+    # When two consecutive swings are the same type, keep the more extreme one
     alternating = [raw_swings[0]]
     for swing in raw_swings[1:]:
         prev = alternating[-1]
         if swing['type'] != prev['type']:
             alternating.append(swing)
         else:
+            # Same type — keep more extreme
             if swing['type'] == 'high' and swing['price'] > prev['price']:
                 alternating[-1] = swing
             elif swing['type'] == 'low' and swing['price'] < prev['price']:
@@ -85,47 +89,20 @@ def find_impulses(df):
     if len(alternating) < 2:
         return []
 
-    # 3. Form impulses
+    # ── Step 3: Build impulses from alternating swing pairs ──
     impulses = []
-    up_count = 0
-    down_count = 0
-
     for i in range(len(alternating) - 1):
         a = alternating[i]
         b = alternating[i + 1]
         points = abs(b['price'] - a['price'])
 
-        # Min points filter
         if points < IMPULSE_MIN_POINTS:
-            continue
-
-        time_diff_minutes = (b['time'] - a['time']).total_seconds() / 60.0
-
-        # Min/Max time filters
-        if time_diff_minutes < IMPULSE_MIN_MINUTES or time_diff_minutes > IMPULSE_MAX_MINUTES:
-            continue
-
-        # Efficiency filter
-        mask = (ohlc.index >= a['time']) & (ohlc.index <= b['time'])
-        window_ohlc = ohlc[mask]
-
-        if window_ohlc.empty:
-            continue
-
-        high_of_range = window_ohlc['high'].max()
-        low_of_range = window_ohlc['low'].min()
-        range_points = high_of_range - low_of_range
-
-        efficiency = points / range_points if range_points > 0 else 0
-        if efficiency < IMPULSE_MIN_EFFICIENCY:
             continue
 
         if a['type'] == 'low' and b['type'] == 'high':
             imp_type = 'up'
-            up_count += 1
         elif a['type'] == 'high' and b['type'] == 'low':
             imp_type = 'down'
-            down_count += 1
         else:
             continue
 
@@ -136,10 +113,9 @@ def find_impulses(df):
             'price_start': a['price'],
             'price_stop':  b['price'],
             'points': points,
-            'efficiency': round(efficiency, 2),
         })
 
-    print(f"Found {len(impulses)} valid impulses (UP: {up_count}, DOWN: {down_count}).")
+    print(f"Found {len(impulses)} valid impulses (15min, N={N}, min={IMPULSE_MIN_POINTS}pts).")
     return impulses
 
 def build_volume_profile(df, start_time, stop_time):
@@ -164,37 +140,45 @@ def find_delta_zones(profile, impulse):
     """
     Finds institutional delta zones near the STOPPING point of the impulse.
 
-    Three layers of institutional confirmation:
-    1. Stopping Zone Delta — largest opposing delta in the last 30% of the range
-    2. POC Shift — is the volume POC in the stopping zone? (institutional absorption)
-    3. Imbalance Ratio — bid/ask volume ratio at the stop (3:1+ = strong)
-    4. Delta Exhaustion — did aggressive flow fade in the second half?
+    Key insight: the delta zone that matters is where the impulse STOPPED.
+    That's where institutional limit orders absorbed the aggressive flow and
+    halted the move. Looking at delta across the entire profile dilutes the
+    signal with noise from the body of the impulse.
 
-    Returns enriched dict with all metrics for downstream scoring.
+    Improvements over v1:
+    1. Only examines the last 30% of the impulse range (near price_stop)
+    2. Returns the single strongest zone (not a list of all qualifying levels)
+    3. Computes delta exhaustion: did aggressive flow weaken at the extreme?
+
+    Returns dict with:
+      zone_price:       price level of the strongest stopping delta
+      zone_delta:       net delta at that level (signed)
+      zone_volume:      total volume at that level
+      exhaustion:       bool — True if delta was fading at the extreme
+      exhaustion_score: float 0-1, how exhausted the flow was
+      buy_zones / sell_zones: legacy-compatible lists
     """
-    empty_result = {
-        'buy': [], 'sell': [],
-        'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
-        'exhaustion': False, 'exhaustion_score': 0.0,
-        'poc_in_stop_zone': False, 'poc_price': None,
-        'imbalance_ratio': 0.0,
-    }
-
     if profile.empty:
-        return empty_result
+        return {
+            'buy': [], 'sell': [],
+            'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
+            'exhaustion': False, 'exhaustion_score': 0.0,
+        }
 
     price_start = impulse['price_start']
     price_stop  = impulse['price_stop']
     imp_type    = impulse['type']
 
-    # ── 1. Define the stopping zone: last 30% of the impulse range ──
+    # ── Define the stopping zone: last 30% of the impulse range ──
     full_range = abs(price_stop - price_start)
     zone_depth = full_range * STOPPING_ZONE_PCT
 
     if imp_type == 'up':
+        # Up impulse stopped at the top → look at top 30%
         zone_low  = price_stop - zone_depth
-        zone_high = price_stop + 10
+        zone_high = price_stop + 10  # small buffer above
     else:
+        # Down impulse stopped at the bottom → look at bottom 30%
         zone_low  = price_stop - 10
         zone_high = price_stop + zone_depth
 
@@ -203,50 +187,36 @@ def find_delta_zones(profile, impulse):
     ]
 
     if stopping_profile.empty:
-        return empty_result
+        return {
+            'buy': [], 'sell': [],
+            'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
+            'exhaustion': False, 'exhaustion_score': 0.0,
+        }
 
-    # ── 2. Find the level with the strongest OPPOSING delta ──
+    # ── Find the level with the strongest OPPOSING delta ──
+    # For up impulse: sellers (negative delta) stopped the move → look for most negative
+    # For down impulse: buyers (positive delta) stopped the move → look for most positive
     if imp_type == 'up':
+        # Sellers stopped it — find level with most negative delta
         opposing = stopping_profile[stopping_profile['delta'] < -MIN_DELTA_CONTRACTS]
         if not opposing.empty:
-            best_idx = opposing['delta'].idxmin()
+            best_idx = opposing['delta'].idxmin()  # most negative
         else:
             best_idx = stopping_profile['delta'].idxmin()
     else:
+        # Buyers stopped it — find level with most positive delta
         opposing = stopping_profile[stopping_profile['delta'] > MIN_DELTA_CONTRACTS]
         if not opposing.empty:
-            best_idx = opposing['delta'].idxmax()
+            best_idx = opposing['delta'].idxmax()  # most positive
         else:
             best_idx = stopping_profile['delta'].idxmax()
 
     zone_delta  = float(stopping_profile.loc[best_idx, 'delta'])
     zone_volume = float(stopping_profile.loc[best_idx, 'volume'])
 
-    # ── 3. POC Shift — is Point of Control in the stopping zone? ──
-    # If the highest-volume price level of the ENTIRE impulse sits in the
-    # stopping zone, it confirms institutional absorption at the extreme.
-    poc_price = float(profile['volume'].idxmax())
-    poc_in_stop_zone = zone_low <= poc_price <= zone_high
-
-    # ── 4. Imbalance Ratio at the stopping zone ──
-    # For DOWN impulse: buyers (positive delta) absorbing sellers → high buy/sell ratio
-    # For UP impulse: sellers (negative delta) absorbing buyers → high sell/buy ratio
-    # We compute: opposing_volume / driving_volume at the stopping zone
-    stop_total_delta = stopping_profile['delta'].sum()
-    stop_total_volume = stopping_profile['volume'].sum()
-
-    # Split volume into buy-side (positive delta) and sell-side (negative delta)
-    positive_delta = stopping_profile[stopping_profile['delta'] > 0]['delta'].sum()
-    negative_delta = abs(stopping_profile[stopping_profile['delta'] < 0]['delta'].sum())
-
-    if imp_type == 'up':
-        # Up impulse → sellers stopped it → sell/buy ratio matters
-        imbalance_ratio = negative_delta / positive_delta if positive_delta > 0 else 0
-    else:
-        # Down impulse → buyers stopped it → buy/sell ratio matters
-        imbalance_ratio = positive_delta / negative_delta if negative_delta > 0 else 0
-
-    # ── 5. Delta exhaustion detection ──
+    # ── Delta exhaustion detection ──
+    # Split the impulse into first half and second half
+    # If the aggressive side's delta weakened in the second half, they're exhausting
     mid_price = (price_start + price_stop) / 2
 
     if imp_type == 'up':
@@ -259,21 +229,27 @@ def find_delta_zones(profile, impulse):
     first_delta = first_half['delta'].sum() if not first_half.empty else 0
     second_delta = second_half['delta'].sum() if not second_half.empty else 0
 
+    # For up impulse: buyers drive it → positive delta should dominate
+    # Exhaustion = second half has LESS positive (or more negative) delta
+    # For down impulse: sellers drive it → negative delta should dominate
+    # Exhaustion = second half has LESS negative (or more positive) delta
     exhaustion = False
     exhaustion_score = 0.0
 
     if imp_type == 'up' and first_delta > 0:
+        # Buyers weakening: second half delta is less positive
         ratio = second_delta / first_delta if first_delta != 0 else 1.0
-        if ratio < 0.5:
+        if ratio < 0.5:  # buyers lost more than half their intensity
             exhaustion = True
             exhaustion_score = round(1.0 - max(0, min(1, ratio)), 2)
     elif imp_type == 'down' and first_delta < 0:
+        # Sellers weakening: second half delta is less negative
         ratio = second_delta / first_delta if first_delta != 0 else 1.0
-        if ratio < 0.5:
+        if ratio < 0.5:  # sellers lost more than half their intensity
             exhaustion = True
             exhaustion_score = round(1.0 - max(0, min(1, ratio)), 2)
 
-    # ── Output ──
+    # ── Legacy-compatible output + enriched data ──
     meets_threshold = abs(zone_delta) >= MIN_DELTA_CONTRACTS
     buy_zones  = [best_idx] if imp_type == 'up' and meets_threshold else []
     sell_zones = [best_idx] if imp_type == 'down' and meets_threshold else []
@@ -286,9 +262,6 @@ def find_delta_zones(profile, impulse):
         'zone_volume': zone_volume,
         'exhaustion': exhaustion,
         'exhaustion_score': exhaustion_score,
-        'poc_price': poc_price,
-        'poc_in_stop_zone': poc_in_stop_zone,
-        'imbalance_ratio': round(imbalance_ratio, 2),
     }
 
 def check_orderbook_state(mbo_df, target_price, touch_time, direction):
@@ -487,8 +460,6 @@ def backtest(features_df, impulses, mbo_df, filename):
         largest_delta_zone_price = zones['zone_price']
         delta_exhaustion = zones.get('exhaustion', False)
         delta_exhaustion_score = zones.get('exhaustion_score', 0.0)
-        poc_in_stop_zone = zones.get('poc_in_stop_zone', False)
-        imbalance_ratio = zones.get('imbalance_ratio', 0.0)
         
         # ── Absorption detection at end of impulse ──
         absorption_detected = _detect_absorption(features_df, imp, profile)
@@ -504,126 +475,180 @@ def backtest(features_df, impulses, mbo_df, filename):
             
         touched = False
         touch_time = None
-        target_price = largest_delta_zone_price
-        entry_price = None
+        target_price = None
         
-        in_zone = False
-        first_touch_skipped = False
-        
-        # ── Find zone touches (tolerance ±5.0 points) ──
+        # ── Touch tolerance: 5.0 points (increased from 1.0) ──
         for ts, row in post_impulse.iterrows():
             price = row['price']
-            is_in_zone = abs(price - target_price) <= TOUCH_TOLERANCE
-            
-            if is_in_zone and not in_zone:
-                # We just ENTERED the zone
-                in_zone = True
-                touch_np = np.datetime64(ts)
-                
-                # Check return speed filter (count 5-min candles between stop and touch)
-                bars_between = candles[
-                    (candles.index.values > stop_time_np) &
-                    (candles.index.values <= touch_np)
-                ]
-                
-                if len(bars_between) < 3 and not first_touch_skipped:
-                    # Too fast, skip this first touch
-                    first_touch_skipped = True
-                    continue
-                else:
-                    # Valid touch (either >= 3 bars, or it's the second touch)
-                    touched = True
-                    touch_time = ts
-                    entry_price = price
-                    break
-            elif not is_in_zone:
-                in_zone = False
+            if abs(price - largest_delta_zone_price) <= TOUCH_TOLERANCE:
+                touched = True
+                touch_time = ts
+                target_price = largest_delta_zone_price
+                break
                 
         if touched:
             returns_count += 1
+            rejection_reason = "Confirmation criteria not met (POC mandatory)"
             
-            # ── SL logic: behind the impulse start ──
-            if imp_type == 'up':
-                sl_price = imp['price_start'] - SL_ZONE_BUFFER
-            else:
-                sl_price = imp['price_start'] + SL_ZONE_BUFFER
-            
-            # Enforce minimum SL distance of 40 points
-            if imp_type == 'up':
-                sl_price = min(sl_price, entry_price - 40)
-            else:
-                sl_price = max(sl_price, entry_price + 40)
-                
-            # Enforce maximum SL distance of 120 points
-            if imp_type == 'up':
-                sl_price = max(sl_price, entry_price - 120)
-            else:
-                sl_price = min(sl_price, entry_price + 120)
-            
-            # ── Dynamic 1:1 RR — TP equals SL distance ──
-            sl_distance = abs(entry_price - sl_price)
-            tp_distance = sl_distance * TP_RR_RATIO
-            tp_price = entry_price + tp_distance if imp_type == 'up' else entry_price - tp_distance
-            reward_risk_ratio = TP_RR_RATIO
-            
-            # Outcome calculation (Look forward 4 hours)
-            # Entry happens at the exact tick we touched the zone
-            entry_time = np.datetime64(touch_time)
-            end_time = entry_time + np.timedelta64(4, 'h')
-
-            post_signal = features_df[
-                (features_df.index.values > entry_time) & 
-                (features_df.index.values <= end_time)
+            touch_np = np.datetime64(touch_time)
+            conf_end = touch_np + np.timedelta64(CONFIRMATION_WINDOW_MIN, 'm')
+            conf_window = post_impulse[
+                (post_impulse.index.values > touch_np) & 
+                (post_impulse.index.values <= conf_end)
             ]
-
-            outcome = 'timeout'
-            result = '0R'
-            r_multiple = 0.0
-            bars_to_outcome = 0
-
-            if not post_signal.empty:
-                if imp_type == 'up':
-                    hits_tp = post_signal[post_signal['price'].values >= tp_price]
-                    hits_sl = post_signal[post_signal['price'].values <= sl_price]
-                else:
-                    hits_tp = post_signal[post_signal['price'].values <= tp_price]
-                    hits_sl = post_signal[post_signal['price'].values >= sl_price]
-
-                sentinel = np.datetime64('2100-01-01')
-                t_tp = hits_tp.index.values[0] if not hits_tp.empty else sentinel
-                t_sl = hits_sl.index.values[0] if not hits_sl.empty else sentinel
-
-                if t_tp < t_sl and t_tp != sentinel:
-                    outcome = 'win'
-                    r_multiple = round(reward_risk_ratio, 2)
-                    result = f'+{r_multiple}R'
-                    bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
-                elif t_sl < t_tp and t_sl != sentinel:
-                    outcome = 'loss'
-                    r_multiple = -1.0
-                    result = '-1R'
-                    bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
+            
+            if conf_window.empty:
+                continue
+                
+            window_candles = candles[
+                (candles.index.values > touch_np) & 
+                (candles.index.values <= conf_end)
+            ]
+            
+            # Orderbook confirmation at touch (slice 5min window around touch time)
+            mbo_start = touch_np - np.timedelta64(5, 'm')
+            mbo_end = touch_np + np.timedelta64(5, 'm')
+            mbo_slice = mbo_df[
+                (mbo_df.index.values >= mbo_start) & 
+                (mbo_df.index.values <= mbo_end)
+            ]
+            
+            large_limit_present, layering = check_orderbook_state(mbo_slice, target_price, touch_time, imp_type)
+            if large_limit_present:
+                ob_conf_count += 1
+                
+            for c_ts, c_row in window_candles.iterrows():
+                c_ts_np = np.datetime64(c_ts)
+                c_trades = features_df[
+                    (features_df.index.values >= c_ts_np) & 
+                    (features_df.index.values < c_ts_np + np.timedelta64(5, 'm'))
+                ]
+                if c_trades.empty:
+                    continue
+                poc = c_trades.groupby('price')['size'].sum().idxmax()
+                
+                close_price = c_row['close']
+                
+                # CVD confirmation
+                cvd_slice = conf_window[conf_window.index.values <= c_ts_np]
+                cvd_at_touch = cvd_slice['cvd'].iloc[-1] if not cvd_slice.empty else 0
+                current_cvd = c_trades['cvd'].iloc[-1] if 'cvd' in c_trades.columns else 0
+                
+                cvd_confirmed = False
+                if imp_type == 'up' and current_cvd > cvd_at_touch:
+                    cvd_confirmed = True
+                elif imp_type == 'down' and current_cvd < cvd_at_touch:
+                    cvd_confirmed = True
                     
-            signals.append({
-                'entry_time': str(touch_time) + 'Z',
-                'direction': 'buy' if imp_type == 'up' else 'sell',
-                'entry_price': entry_price,
-                'tp_price': tp_price,
-                'sl_price': sl_price,
-                'sl_distance': round(sl_distance, 2),
-                'reward_risk': round(reward_risk_ratio, 2),
-                'largest_delta_zone': largest_delta_zone_price,
-                'absorption': absorption_detected,
-                'exhaustion': delta_exhaustion,
-                'exhaustion_score': delta_exhaustion_score,
-                'poc_in_stop_zone': poc_in_stop_zone,
-                'imbalance_ratio': imbalance_ratio,
-                'outcome': outcome,
-                'result': result,
-                'r_multiple': r_multiple,
-                'bars_to_outcome': bars_to_outcome
-            })
-            break
+                # POC confirmation (MANDATORY for entry)
+                poc_confirmed = False
+                if imp_type == 'up' and close_price > poc:
+                    poc_confirmed = True
+                    poc_conf_count += 1
+                elif imp_type == 'down' and close_price < poc:
+                    poc_confirmed = True
+                    poc_conf_count += 1
+                    
+                # Scoring
+                score = 0
+                if poc_confirmed:
+                    score += 1
+                if large_limit_present:
+                    score += 1
+                if cvd_confirmed:
+                    score += 1
+                if absorption_detected:
+                    score += 1  # Absorption bonus
+                if delta_exhaustion:
+                    score += 1  # Exhaustion bonus — aggressive side faded
+                    
+                # ── Entry gate: score >= 1 AND poc_confirmed is mandatory ──
+                if score >= 1 and poc_confirmed:
+                    # ── SL logic: behind the largest delta zone extreme ──
+                    if imp_type == 'up':
+                        sl_price = imp['price_start'] - SL_ZONE_BUFFER
+                    else:
+                        sl_price = imp['price_start'] + SL_ZONE_BUFFER
+                    
+                    entry_price = close_price
+                    tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
+                    
+                    if imp_type == 'up':
+                        sl_price = min(sl_price, entry_price - 40)
+                    else:
+                        sl_price = max(sl_price, entry_price + 40)
+                        
+                    # Enforce maximum SL distance of 120 points
+                    if imp_type == 'up':
+                        sl_price = max(sl_price, entry_price - 120)
+                    else:
+                        sl_price = min(sl_price, entry_price + 120)
+                    
+                    # ── Dynamic R-multiple based on actual SL distance ──
+                    sl_distance = abs(entry_price - sl_price)
+                    tp_distance = abs(tp_price - entry_price)
+                    reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+                    
+                    # Outcome calculation (Look forward 4 hours)
+                    # entry_price = close of the 5-min candle, so entry happens
+                    # at the END of the candle, not the start. Use c_ts + 5min
+                    # to avoid counting intra-candle ticks as post-entry.
+                    candle_end = np.datetime64(c_ts) + np.timedelta64(5, 'm')
+                    entry_time = candle_end
+                    end_time = entry_time + np.timedelta64(4, 'h')
+
+                    post_signal = features_df[
+                        (features_df.index.values > entry_time) & 
+                        (features_df.index.values <= end_time)
+                    ]
+
+                    outcome = 'timeout'
+                    result = '0R'
+                    r_multiple = 0.0
+                    bars_to_outcome = 0
+
+                    if not post_signal.empty:
+                        if imp_type == 'up':
+                            hits_tp = post_signal[post_signal['price'].values >= tp_price]
+                            hits_sl = post_signal[post_signal['price'].values <= sl_price]
+                        else:
+                            hits_tp = post_signal[post_signal['price'].values <= tp_price]
+                            hits_sl = post_signal[post_signal['price'].values >= sl_price]
+
+                        sentinel = np.datetime64('2100-01-01')
+                        t_tp = hits_tp.index.values[0] if not hits_tp.empty else sentinel
+                        t_sl = hits_sl.index.values[0] if not hits_sl.empty else sentinel
+
+                        if t_tp < t_sl and t_tp != sentinel:
+                            outcome = 'win'
+                            r_multiple = round(reward_risk_ratio, 2)
+                            result = f'+{r_multiple}R'
+                            bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
+                        elif t_sl < t_tp and t_sl != sentinel:
+                            outcome = 'loss'
+                            r_multiple = -1.0
+                            result = '-1R'
+                            bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
+                            
+                    signals.append({
+                        'entry_time': str(c_ts) + 'Z',
+                        'direction': 'buy' if imp_type == 'up' else 'sell',
+                        'score': score,
+                        'entry_price': entry_price,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price,
+                        'sl_distance': round(sl_distance, 2),
+                        'reward_risk': round(reward_risk_ratio, 2),
+                        'largest_delta_zone': largest_delta_zone_price,
+                        'absorption': absorption_detected,
+                        'exhaustion': delta_exhaustion,
+                        'exhaustion_score': delta_exhaustion_score,
+                        'outcome': outcome,
+                        'result': result,
+                        'r_multiple': r_multiple,
+                        'bars_to_outcome': bars_to_outcome
+                    })
+                    break
                     
     # Print step-by-step debug for the day
     date_str = filename.replace(".parquet", "")
