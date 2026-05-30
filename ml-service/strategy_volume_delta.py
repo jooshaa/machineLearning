@@ -452,32 +452,16 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             entry_price = touch_price
             
-            # ── SL logic: behind the big delta zone ──
+            # ── Fixed SL: 100 points, Fixed TP: 100 points (1:1 RR) ──
             if imp_type == 'up':
-                sl_price = largest_delta_zone_price - SL_ZONE_BUFFER
+                sl_price = entry_price - 100
+                tp_price = entry_price + 100
             else:
-                sl_price = largest_delta_zone_price + SL_ZONE_BUFFER
-            
-            # Enforce minimum SL distance of 20 points
-            if imp_type == 'up':
-                sl_price = min(sl_price, entry_price - 20)
-            else:
-                sl_price = max(sl_price, entry_price + 20)
+                sl_price = entry_price + 100
+                tp_price = entry_price - 100
                 
-            # Enforce maximum SL distance of 60 points
-            if imp_type == 'up':
-                sl_price = max(sl_price, entry_price - 60)
-            else:
-                sl_price = min(sl_price, entry_price + 60)
-            
-            # ── Dynamic TP based on 1:2 Risk/Reward ──
-            sl_distance = abs(entry_price - sl_price)
-            if imp_type == 'up':
-                tp_price = entry_price + (sl_distance * 2)
-            else:
-                tp_price = entry_price - (sl_distance * 2)
-                
-            reward_risk_ratio = 2.0  # 1:2 RR
+            sl_distance = 100
+            reward_risk_ratio = 1.0  # 1:1 RR
             
             end_time = entry_time + np.timedelta64(4, 'h')
 
@@ -565,7 +549,7 @@ def backtest(features_df, impulses, mbo_df, filename):
 def stream_main():
     print("🚀 Starting Volume Delta Profile Strategy Backtest (Stream Mode)...")
     
-    cache_dir = "data/raw/mbo/NQ"
+    cache_dir = "data/raw/mbo/NQ/NQ"
     if not os.path.exists(cache_dir):
         print(f"Cache directory {cache_dir} missing. Creating mock data for demonstration.")
         create_mock_data()
