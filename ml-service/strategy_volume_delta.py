@@ -168,85 +168,44 @@ def find_delta_zones(profile, impulse):
     price_stop  = impulse['price_stop']
     imp_type    = impulse['type']
 
-    # ── Define the stopping zone: last 30% of the impulse range ──
-    full_range = abs(price_stop - price_start)
-    zone_depth = full_range * STOPPING_ZONE_PCT
-
-    if imp_type == 'up':
-        # Up impulse stopped at the top → look at top 30%
-        zone_low  = price_stop - zone_depth
-        zone_high = price_stop + 10  # small buffer above
+    # ── Define the reload zone: upper half for sells, lower half for buys ──
+    mid_price = (price_start + price_stop) / 2.0
+    
+    if imp_type == 'down':
+        # Down impulse (Sell trend) → look at the UPPER half
+        zone_low  = mid_price
+        zone_high = max(price_start, price_stop) + 10 # buffer
     else:
-        # Down impulse stopped at the bottom → look at bottom 30%
-        zone_low  = price_stop - 10
-        zone_high = price_stop + zone_depth
+        # Up impulse (Buy trend) → look at the LOWER half
+        zone_low  = min(price_start, price_stop) - 10 # buffer
+        zone_high = mid_price
 
-    stopping_profile = profile[
+    reload_profile = profile[
         (profile.index >= zone_low) & (profile.index <= zone_high)
     ]
 
-    if stopping_profile.empty:
+    if reload_profile.empty:
         return {
             'buy': [], 'sell': [],
             'zone_price': None, 'zone_delta': 0, 'zone_volume': 0,
             'exhaustion': False, 'exhaustion_score': 0.0,
         }
 
-    # ── Find the level with the strongest OPPOSING delta ──
-    # For up impulse: sellers (negative delta) stopped the move → look for most negative
-    # For down impulse: buyers (positive delta) stopped the move → look for most positive
-    if imp_type == 'up':
-        # Sellers stopped it — find level with most negative delta
-        opposing = stopping_profile[stopping_profile['delta'] < -MIN_DELTA_CONTRACTS]
-        if not opposing.empty:
-            best_idx = opposing['delta'].idxmin()  # most negative
-        else:
-            best_idx = stopping_profile['delta'].idxmin()
+    # ── Find the level with the strongest INITIATING delta ──
+    if imp_type == 'down':
+        # Sell trend: find the level with the most NEGATIVE delta in the upper half
+        best_idx = reload_profile['delta'].idxmin()
     else:
-        # Buyers stopped it — find level with most positive delta
-        opposing = stopping_profile[stopping_profile['delta'] > MIN_DELTA_CONTRACTS]
-        if not opposing.empty:
-            best_idx = opposing['delta'].idxmax()  # most positive
-        else:
-            best_idx = stopping_profile['delta'].idxmax()
+        # Buy trend: find the level with the most POSITIVE delta in the lower half
+        best_idx = reload_profile['delta'].idxmax()
 
-    zone_delta  = float(stopping_profile.loc[best_idx, 'delta'])
-    zone_volume = float(stopping_profile.loc[best_idx, 'volume'])
+    zone_delta  = float(reload_profile.loc[best_idx, 'delta'])
+    zone_volume = float(reload_profile.loc[best_idx, 'volume'])
 
-    # ── Delta exhaustion detection ──
-    # Split the impulse into first half and second half
-    # If the aggressive side's delta weakened in the second half, they're exhausting
-    mid_price = (price_start + price_stop) / 2
-
-    if imp_type == 'up':
-        first_half = profile[profile.index <= mid_price]
-        second_half = profile[profile.index > mid_price]
-    else:
-        first_half = profile[profile.index >= mid_price]
-        second_half = profile[profile.index < mid_price]
-
-    first_delta = first_half['delta'].sum() if not first_half.empty else 0
-    second_delta = second_half['delta'].sum() if not second_half.empty else 0
-
-    # For up impulse: buyers drive it → positive delta should dominate
-    # Exhaustion = second half has LESS positive (or more negative) delta
-    # For down impulse: sellers drive it → negative delta should dominate
-    # Exhaustion = second half has LESS negative (or more positive) delta
+    # Exhaustion logic is skipped for the reload strategy, as we look for continuation
     exhaustion = False
     exhaustion_score = 0.0
 
-    if imp_type == 'up' and first_delta > 0:
-        # Buyers weakening: second half delta is less positive
-        ratio = second_delta / first_delta if first_delta != 0 else 1.0
-        if ratio < 0.5:  # buyers lost more than half their intensity
-            exhaustion = True
-            exhaustion_score = round(1.0 - max(0, min(1, ratio)), 2)
-    elif imp_type == 'down' and first_delta < 0:
-        # Sellers weakening: second half delta is less negative
-        ratio = second_delta / first_delta if first_delta != 0 else 1.0
-        if ratio < 0.5:  # sellers lost more than half their intensity
-            exhaustion = True
-            exhaustion_score = round(1.0 - max(0, min(1, ratio)), 2)
 
     # ── Legacy-compatible output + enriched data ──
     meets_threshold = abs(zone_delta) >= MIN_DELTA_CONTRACTS
@@ -260,7 +219,7 @@ def find_delta_zones(profile, impulse):
         'zone_delta': zone_delta,
         'zone_volume': zone_volume,
         'exhaustion': exhaustion,
-        'exhaustion_score': exhaustion_score,
+        'exhaustion_score': exhaustion_score
     }
 
 def check_orderbook_state(mbo_df, target_price, touch_time, direction):
@@ -493,13 +452,11 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             entry_price = touch_price
             
-            # ── SL logic: behind the largest delta zone extreme ──
+            # ── SL logic: behind the big delta zone ──
             if imp_type == 'up':
-                sl_price = imp['price_start'] - SL_ZONE_BUFFER
+                sl_price = largest_delta_zone_price - SL_ZONE_BUFFER
             else:
-                sl_price = imp['price_start'] + SL_ZONE_BUFFER
-            
-            tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
+                sl_price = largest_delta_zone_price + SL_ZONE_BUFFER
             
             # Enforce minimum SL distance of 20 points
             if imp_type == 'up':
@@ -513,10 +470,14 @@ def backtest(features_df, impulses, mbo_df, filename):
             else:
                 sl_price = min(sl_price, entry_price + 60)
             
-            # ── Dynamic R-multiple based on actual SL distance ──
+            # ── Dynamic TP based on 1:2 Risk/Reward ──
             sl_distance = abs(entry_price - sl_price)
-            tp_distance = abs(tp_price - entry_price)
-            reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+            if imp_type == 'up':
+                tp_price = entry_price + (sl_distance * 2)
+            else:
+                tp_price = entry_price - (sl_distance * 2)
+                
+            reward_risk_ratio = 2.0  # 1:2 RR
             
             end_time = entry_time + np.timedelta64(4, 'h')
 
