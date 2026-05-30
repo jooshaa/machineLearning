@@ -13,9 +13,9 @@ IMPULSE_MIN_POINTS = 120      # minimum NQ points for valid impulse (raised for 
 IMPULSE_MAX_DURATION_MIN = 120
 MIN_IMPULSE_CANDLES = 3       # minimum 1-min candles for a valid impulse
 MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone (raised)
-TP_POINTS = 150               # take profit in NQ points  
-SL_ZONE_BUFFER = 10           # points behind the delta zone extreme for SL
-SL_FALLBACK_MIN = 20          # minimum SL distance if zone is too close to entry
+TP_POINTS = 75                # take profit in NQ points  
+SL_ZONE_BUFFER = 5            # points behind the delta zone extreme for SL
+SL_FALLBACK_MIN = 10          # minimum SL distance if zone is too close to entry
 TOUCH_TOLERANCE = 5.0         # points tolerance for zone touch detection
 CONFIRMATION_WINDOW_MIN = 30  # wait for confirmation within 30 min of zone touch
 CONSOLIDATION_RANGE = 50      # max range for consolidation
@@ -478,189 +478,112 @@ def backtest(features_df, impulses, mbo_df, filename):
         target_price = None
         
         # ── Touch tolerance: 5.0 points (increased from 1.0) ──
+        touch_price = None
         for ts, row in post_impulse.iterrows():
             price = row['price']
             if abs(price - largest_delta_zone_price) <= TOUCH_TOLERANCE:
                 touched = True
                 touch_time = ts
                 target_price = largest_delta_zone_price
+                touch_price = price
                 break
                 
         if touched:
             returns_count += 1
-            rejection_reason = "Confirmation criteria not met (POC mandatory)"
             
-            touch_np = np.datetime64(touch_time)
-            conf_end = touch_np + np.timedelta64(CONFIRMATION_WINDOW_MIN, 'm')
-            conf_window = post_impulse[
-                (post_impulse.index.values > touch_np) & 
-                (post_impulse.index.values <= conf_end)
-            ]
+            entry_time = np.datetime64(touch_time)
+            entry_price = touch_price
             
-            if conf_window.empty:
-                continue
-                
-            window_candles = candles[
-                (candles.index.values > touch_np) & 
-                (candles.index.values <= conf_end)
-            ]
+            # ── SL logic: behind the largest delta zone extreme ──
+            if imp_type == 'up':
+                sl_price = imp['price_start'] - SL_ZONE_BUFFER
+            else:
+                sl_price = imp['price_start'] + SL_ZONE_BUFFER
             
-            # Orderbook confirmation at touch (slice 5min window around touch time)
-            mbo_start = touch_np - np.timedelta64(5, 'm')
-            mbo_end = touch_np + np.timedelta64(5, 'm')
-            mbo_slice = mbo_df[
-                (mbo_df.index.values >= mbo_start) & 
-                (mbo_df.index.values <= mbo_end)
-            ]
+            tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
             
-            large_limit_present, layering = check_orderbook_state(mbo_slice, target_price, touch_time, imp_type)
-            if large_limit_present:
-                ob_conf_count += 1
+            # Enforce minimum SL distance of 20 points
+            if imp_type == 'up':
+                sl_price = min(sl_price, entry_price - 20)
+            else:
+                sl_price = max(sl_price, entry_price + 20)
                 
-            for c_ts, c_row in window_candles.iterrows():
-                c_ts_np = np.datetime64(c_ts)
-                c_trades = features_df[
-                    (features_df.index.values >= c_ts_np) & 
-                    (features_df.index.values < c_ts_np + np.timedelta64(5, 'm'))
-                ]
-                if c_trades.empty:
-                    continue
-                poc = c_trades.groupby('price')['size'].sum().idxmax()
-                
-                close_price = c_row['close']
-                
-                # CVD confirmation
-                cvd_slice = conf_window[conf_window.index.values <= c_ts_np]
-                cvd_at_touch = cvd_slice['cvd'].iloc[-1] if not cvd_slice.empty else 0
-                current_cvd = c_trades['cvd'].iloc[-1] if 'cvd' in c_trades.columns else 0
-                
-                cvd_confirmed = False
-                if imp_type == 'up' and current_cvd > cvd_at_touch:
-                    cvd_confirmed = True
-                elif imp_type == 'down' and current_cvd < cvd_at_touch:
-                    cvd_confirmed = True
-                    
-                # POC confirmation (MANDATORY for entry)
-                poc_confirmed = False
-                if imp_type == 'up' and close_price > poc:
-                    poc_confirmed = True
-                    poc_conf_count += 1
-                elif imp_type == 'down' and close_price < poc:
-                    poc_confirmed = True
-                    poc_conf_count += 1
-                    
-                # Scoring
-                score = 0
-                if poc_confirmed:
-                    score += 1
-                if large_limit_present:
-                    score += 1
-                if cvd_confirmed:
-                    score += 1
-                if absorption_detected:
-                    score += 1  # Absorption bonus
-                if delta_exhaustion:
-                    score += 1  # Exhaustion bonus — aggressive side faded
-                    
-                # ── Entry gate: score >= 1 AND poc_confirmed is mandatory ──
-                if score >= 1 and poc_confirmed:
-                    # ── SL logic: behind the largest delta zone extreme ──
-                    if imp_type == 'up':
-                        sl_price = imp['price_start'] - SL_ZONE_BUFFER
-                    else:
-                        sl_price = imp['price_start'] + SL_ZONE_BUFFER
-                    
-                    entry_price = close_price
-                    tp_price = entry_price + TP_POINTS if imp_type == 'up' else entry_price - TP_POINTS
-                    
-                    if imp_type == 'up':
-                        sl_price = min(sl_price, entry_price - 40)
-                    else:
-                        sl_price = max(sl_price, entry_price + 40)
-                        
-                    # Enforce maximum SL distance of 120 points
-                    if imp_type == 'up':
-                        sl_price = max(sl_price, entry_price - 120)
-                    else:
-                        sl_price = min(sl_price, entry_price + 120)
-                    
-                    # ── Dynamic R-multiple based on actual SL distance ──
-                    sl_distance = abs(entry_price - sl_price)
-                    tp_distance = abs(tp_price - entry_price)
-                    reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
-                    
-                    # Outcome calculation (Look forward 4 hours)
-                    # entry_price = close of the 5-min candle, so entry happens
-                    # at the END of the candle, not the start. Use c_ts + 5min
-                    # to avoid counting intra-candle ticks as post-entry.
-                    candle_end = np.datetime64(c_ts) + np.timedelta64(5, 'm')
-                    entry_time = candle_end
-                    end_time = entry_time + np.timedelta64(4, 'h')
+            # Enforce maximum SL distance of 60 points
+            if imp_type == 'up':
+                sl_price = max(sl_price, entry_price - 60)
+            else:
+                sl_price = min(sl_price, entry_price + 60)
+            
+            # ── Dynamic R-multiple based on actual SL distance ──
+            sl_distance = abs(entry_price - sl_price)
+            tp_distance = abs(tp_price - entry_price)
+            reward_risk_ratio = tp_distance / sl_distance if sl_distance > 0 else 0
+            
+            end_time = entry_time + np.timedelta64(4, 'h')
 
-                    post_signal = features_df[
+            post_signal = features_df[
                         (features_df.index.values > entry_time) & 
                         (features_df.index.values <= end_time)
                     ]
 
-                    outcome = 'timeout'
-                    result = '0R'
-                    r_multiple = 0.0
-                    bars_to_outcome = 0
+            outcome = 'timeout'
+            result = '0R'
+            r_multiple = 0.0
+            bars_to_outcome = 0
 
-                    if not post_signal.empty:
-                        if imp_type == 'up':
-                            hits_tp = post_signal[post_signal['price'].values >= tp_price]
-                            hits_sl = post_signal[post_signal['price'].values <= sl_price]
-                        else:
-                            hits_tp = post_signal[post_signal['price'].values <= tp_price]
-                            hits_sl = post_signal[post_signal['price'].values >= sl_price]
+            if not post_signal.empty:
+                if imp_type == 'up':
+                    hits_tp = post_signal[post_signal['price'].values >= tp_price]
+                    hits_sl = post_signal[post_signal['price'].values <= sl_price]
+                else:
+                    hits_tp = post_signal[post_signal['price'].values <= tp_price]
+                    hits_sl = post_signal[post_signal['price'].values >= sl_price]
 
-                        sentinel = np.datetime64('2100-01-01')
-                        t_tp = hits_tp.index.values.min() if not hits_tp.empty else sentinel
-                        t_sl = hits_sl.index.values.min() if not hits_sl.empty else sentinel
+                sentinel = np.datetime64('2100-01-01')
+                t_tp = hits_tp.index.values.min() if not hits_tp.empty else sentinel
+                t_sl = hits_sl.index.values.min() if not hits_sl.empty else sentinel
 
-                        if t_tp < t_sl and t_tp != sentinel:
-                            outcome = 'win'
-                            r_multiple = round(reward_risk_ratio, 2)
-                            result = f'+{r_multiple}R'
-                            bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
-                        elif t_sl < t_tp and t_sl != sentinel:
-                            outcome = 'loss'
-                            r_multiple = -1.0
-                            result = '-1R'
-                            bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
-                            
-                    if imp_type != 'up':
-                        print(f"\nSELL AUDIT: entry={entry_price:.2f}, tp={tp_price:.2f}, sl={sl_price:.2f}")
-                        print(f"  tp < entry: {tp_price < entry_price}, sl > entry: {sl_price > entry_price}")
-                        print(f"  post_signal rows: {len(post_signal)}")
-                        if not post_signal.empty:
-                            print(f"  price range: {post_signal['price'].min():.2f} - {post_signal['price'].max():.2f}")
-                            print(f"  hits_tp count: {len(post_signal[post_signal['price'].values <= tp_price])}")
-                            print(f"  hits_sl count: {len(post_signal[post_signal['price'].values >= sl_price])}")
-                            print(f"  outcome: {outcome}")
-                        print(f"  t_tp: {t_tp if t_tp != sentinel else 'never'}")
-                        print(f"  t_sl: {t_sl if t_sl != sentinel else 'never'}")
-                            
-                    signals.append({
-                        'entry_time': str(c_ts) + 'Z',
-                        'direction': 'buy' if imp_type == 'up' else 'sell',
-                        'score': score,
-                        'entry_price': entry_price,
-                        'tp_price': tp_price,
-                        'sl_price': sl_price,
-                        'sl_distance': round(sl_distance, 2),
-                        'reward_risk': round(reward_risk_ratio, 2),
-                        'largest_delta_zone': largest_delta_zone_price,
-                        'absorption': absorption_detected,
-                        'exhaustion': delta_exhaustion,
-                        'exhaustion_score': delta_exhaustion_score,
-                        'outcome': outcome,
-                        'result': result,
-                        'r_multiple': r_multiple,
-                        'bars_to_outcome': bars_to_outcome
-                    })
-                    break
+                if t_tp < t_sl and t_tp != sentinel:
+                    outcome = 'win'
+                    r_multiple = round(reward_risk_ratio, 2)
+                    result = f'+{r_multiple}R'
+                    bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
+                elif t_sl < t_tp and t_sl != sentinel:
+                    outcome = 'loss'
+                    r_multiple = -1.0
+                    result = '-1R'
+                    bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
+
+            if imp_type != 'up':
+                print(f"\nSELL AUDIT: entry={entry_price:.2f}, tp={tp_price:.2f}, sl={sl_price:.2f}")
+                print(f"  tp < entry: {tp_price < entry_price}, sl > entry: {sl_price > entry_price}")
+                print(f"  post_signal rows: {len(post_signal)}")
+                if not post_signal.empty:
+                    print(f"  price range: {post_signal['price'].min():.2f} - {post_signal['price'].max():.2f}")
+                    print(f"  hits_tp count: {len(post_signal[post_signal['price'].values <= tp_price])}")
+                    print(f"  hits_sl count: {len(post_signal[post_signal['price'].values >= sl_price])}")
+                    print(f"  outcome: {outcome}")
+                print(f"  t_tp: {t_tp if t_tp != sentinel else 'never'}")
+                print(f"  t_sl: {t_sl if t_sl != sentinel else 'never'}")
+
+            signals.append({
+                'entry_time': str(touch_time) + 'Z',
+                'direction': 'buy' if imp_type == 'up' else 'sell',
+                'score': 0,
+                'entry_price': entry_price,
+                'tp_price': tp_price,
+                'sl_price': sl_price,
+                'sl_distance': round(sl_distance, 2),
+                'reward_risk': round(reward_risk_ratio, 2),
+                'largest_delta_zone': largest_delta_zone_price,
+                'absorption': absorption_detected,
+                'exhaustion': delta_exhaustion,
+                'exhaustion_score': delta_exhaustion_score,
+                'outcome': outcome,
+                'result': result,
+                'r_multiple': r_multiple,
+                'bars_to_outcome': bars_to_outcome
+            })
                     
     # Print step-by-step debug for the day
     date_str = filename.replace(".parquet", "")
