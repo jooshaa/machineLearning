@@ -727,6 +727,14 @@ def stream_main():
                 (trades_only['price'] > median_price * 0.5) &
                 (trades_only['price'] < median_price * 1.5)
             ]
+            
+            # ── SPIKE FILTER (Bad Ticks) ──
+            # Raw MBO data contains erroneous prints far from the market price.
+            # Using a local 11-tick centered median perfectly preserves real, rapid 
+            # market movements (like news spikes) while deleting isolated 1-lot errors.
+            if not trades_only.empty:
+                rolling_med = trades_only['price'].rolling(11, center=True).median().bfill().ffill()
+                trades_only = trades_only[np.abs(trades_only['price'] - rolling_med) <= 30]
             trades_only['delta'] = np.where(trades_only['side'] == 'A', trades_only['size'], -trades_only['size'])
             trades_only['cvd'] = trades_only['delta'].cumsum()
             
