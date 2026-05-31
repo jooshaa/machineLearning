@@ -13,15 +13,13 @@ if parent_dir not in sys.path:
 import strategy_volume_delta
 
 def train_model():
-    print("Collecting signals from backtest...")
-    all_signals = []
-    for chunk in strategy_volume_delta.stream_main():
-        all_signals.extend(chunk)
+    print("Reading signals from CSV...")
+    csv_path = os.path.join(parent_dir, "orderflow_ml", "volume_delta_dataset.csv")
+    
+    if not os.path.exists(csv_path):
+        return {"error": f"CSV not found at {csv_path}"}
         
-    if not all_signals:
-        return {"error": "No signals generated."}
-        
-    df = pd.DataFrame(all_signals)
+    df = pd.read_csv(csv_path)
     
     # Filter out timeouts
     df = df[df['outcome'] != 'timeout'].copy()
@@ -30,21 +28,23 @@ def train_model():
         return {"error": "Not enough data to train."}
         
     # Feature engineering
-    # entry_time has 'Z' at the end, pd.to_datetime handles it
-    df['entry_time_dt'] = pd.to_datetime(df['entry_time'].str.replace('Z', ''), errors='coerce')
+    df['entry_time_dt'] = pd.to_datetime(df['entry_time'].astype(str).str.replace('Z', ''), errors='coerce')
     df['hour'] = df['entry_time_dt'].dt.hour
     df['day_of_week'] = df['entry_time_dt'].dt.dayofweek
-    df['impulse_points'] = abs(df['tp_price'] - df['entry_price'])
     
     # Handle boolean absorption if present
-    df['absorption'] = df['absorption'].astype(int)
+    if 'absorption' in df.columns:
+        df['absorption'] = df['absorption'].astype(int)
     
     # Target
     df['target'] = (df['outcome'] == 'win').astype(int)
     
-    features = ['hour', 'day_of_week', 'sl_distance', 'reward_risk', 'score', 'absorption', 'impulse_points']
+    features = ['sl_distance', 'reward_risk', 'absorption', 'exhaustion_score', 'score', 'hour', 'day_of_week']
     X = df[features]
     y = df['target']
+    
+    print("Features description to verify non-zero values:")
+    print(X.describe())
     
     # Train
     model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
