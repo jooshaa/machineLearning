@@ -452,32 +452,16 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             entry_price = touch_price
             
-            # ── Dynamic SL: structural stop behind impulse start ──
+            # ── Fixed SL: 100 points, Fixed TP: 100 points (1:1 RR) ──
             if imp_type == 'up':
-                sl_price = imp['price_start'] - SL_ZONE_BUFFER
+                sl_price = entry_price - 100
+                tp_price = entry_price + 100
             else:
-                sl_price = imp['price_start'] + SL_ZONE_BUFFER
-            
-            # Enforce a larger minimum SL to prevent getting stopped out by noise
-            # (User previously requested 100, let's set min SL to 40, max to 120)
-            if imp_type == 'up':
-                sl_price = min(sl_price, entry_price - 40)
-                sl_price = max(sl_price, entry_price - 120)
-            else:
-                sl_price = max(sl_price, entry_price + 40)
-                sl_price = min(sl_price, entry_price + 120)
+                sl_price = entry_price + 100
+                tp_price = entry_price - 100
                 
-            sl_distance = abs(entry_price - sl_price)
-            
-            # Dynamic TP based on varying RR depending on the impulse strength
-            # So that reward_risk has continuous variance for the ML model
-            raw_rr = imp['points'] / sl_distance if sl_distance > 0 else 1.0
-            reward_risk_ratio = max(1.0, min(raw_rr, 3.0))  # Cap between 1:1 and 1:3
-            
-            if imp_type == 'up':
-                tp_price = entry_price + (sl_distance * reward_risk_ratio)
-            else:
-                tp_price = entry_price - (sl_distance * reward_risk_ratio)
+            sl_distance = 100
+            reward_risk_ratio = 1.0  # 1:1 RR
             
             end_time = entry_time + np.timedelta64(4, 'h')
 
@@ -526,6 +510,40 @@ def backtest(features_df, impulses, mbo_df, filename):
                 print(f"  t_tp: {t_tp if t_tp != sentinel else 'never'}")
                 print(f"  t_sl: {t_sl if t_sl != sentinel else 'never'}")
 
+            # ── Compute extra ML features ──
+            imp_duration_min = max(1, int((np.datetime64(imp['stop']) - np.datetime64(imp['start'])) / np.timedelta64(1, 'm')))
+            impulse_speed = round(imp['points'] / imp_duration_min, 2)
+
+            imp_slice = features_df[
+                (features_df.index.values >= np.datetime64(imp['start'])) &
+                (features_df.index.values <= np.datetime64(imp['stop']))
+            ]
+            impulse_cvd = float(imp_slice['cvd'].iloc[-1]) if not imp_slice.empty else 0.0
+
+            zone_position = round(abs(target_price - imp['price_start']) / max(1, imp['points']), 2)
+
+            if target_price in profile.index:
+                z_delta = abs(float(profile.loc[target_price, 'delta']))
+                z_vol   = float(profile.loc[target_price, 'volume'])
+                zone_delta_pct = round(z_delta / max(1, z_vol), 2)
+            else:
+                zone_delta_pct = 0.0
+
+            # Orderbook confirmation (already computed above in the POC block)
+            c_ts = pd.Timestamp(touch_time)
+            large_limit_present, layering = check_orderbook_state(
+                mbo_df, target_price, touch_time, 'buy' if imp_type == 'up' else 'sell'
+            )
+
+            session = 0 if c_ts.hour < 8 else (1 if c_ts.hour < 13 else 2)
+
+            volatility = round(float(candles['high'].sub(candles['low']).rolling(20).std().fillna(0.0).iloc[-1]), 2) if len(candles) >= 20 else 0.0
+
+            close_price = candles['close'].iloc[-1] if not candles.empty else entry_price
+            trend = (1 if close_price > candles['close'].rolling(20).mean().iloc[-1] else -1) if len(candles) >= 20 else 0
+
+            impulse_points = round(imp['points'], 2)
+
             signals.append({
                 'entry_time': str(touch_time) + 'Z',
                 'direction': 'buy' if imp_type == 'up' else 'sell',
@@ -539,6 +557,18 @@ def backtest(features_df, impulses, mbo_df, filename):
                 'absorption': absorption_detected,
                 'exhaustion': delta_exhaustion,
                 'exhaustion_score': delta_exhaustion_score,
+                # ── New ML features ──
+                'impulse_points': impulse_points,
+                'impulse_speed': impulse_speed,
+                'impulse_cvd': round(impulse_cvd, 2),
+                'zone_position': zone_position,
+                'zone_delta_pct': zone_delta_pct,
+                'zone_volume': zones.get('zone_volume', 0.0),
+                'ob_large_limit': int(large_limit_present),
+                'ob_layering': int(layering),
+                'session': session,
+                'volatility': volatility,
+                'trend': trend,
                 'outcome': outcome,
                 'result': result,
                 'r_multiple': r_multiple,

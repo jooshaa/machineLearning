@@ -1,87 +1,124 @@
 import os
 import joblib
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_validate
+import numpy as np
+from xgboost import XGBClassifier
+from sklearn.model_selection import cross_validate, StratifiedKFold
 import sys
 
-# Add parent directory to path so we can import strategy_volume_delta
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
-import strategy_volume_delta
+FEATURES = [
+    'hour', 'day_of_week',
+    'sl_distance', 'reward_risk',
+    'score', 'absorption', 'exhaustion_score',
+    'impulse_points', 'impulse_speed', 'impulse_cvd',
+    'zone_position', 'zone_delta_pct', 'zone_volume',
+    'ob_large_limit', 'ob_layering',
+    'session', 'volatility', 'trend',
+]
 
 def train_model():
     print("Reading signals from CSV...")
     csv_path = os.path.join(parent_dir, "orderflow_ml", "volume_delta_dataset.csv")
-    
+
     if not os.path.exists(csv_path):
         return {"error": f"CSV not found at {csv_path}"}
-        
+
     df = pd.read_csv(csv_path)
-    
+    print(f"Loaded {len(df)} total rows from CSV.")
+
     # Filter out timeouts
     df = df[df['outcome'] != 'timeout'].copy()
-    
+    print(f"After removing timeouts: {len(df)} rows.")
+
     if len(df) < 10:
-        return {"error": "Not enough data to train."}
-        
-    # Feature engineering
-    df['entry_time_dt'] = pd.to_datetime(df['entry_time'].astype(str).str.replace('Z', ''), errors='coerce')
+        return {"error": "Not enough data to train (need at least 10 samples)."}
+
+    # ── Time features ──
+    df['entry_time_dt'] = pd.to_datetime(
+        df['entry_time'].astype(str).str.replace('Z', ''), errors='coerce'
+    )
     df['hour'] = df['entry_time_dt'].dt.hour
     df['day_of_week'] = df['entry_time_dt'].dt.dayofweek
-    
-    # Handle boolean absorption if present
-    if 'absorption' in df.columns:
-        df['absorption'] = df['absorption'].astype(int)
-    
-    # Target
+
+    # ── Boolean to int ──
+    for col in ['absorption', 'exhaustion', 'ob_large_limit', 'ob_layering']:
+        if col in df.columns:
+            df[col] = df[col].astype(int)
+
+    # ── Target ──
     df['target'] = (df['outcome'] == 'win').astype(int)
-    
-    features = ['sl_distance', 'reward_risk', 'absorption', 'exhaustion_score', 'score', 'hour', 'day_of_week']
-    X = df[features]
+
+    # ── Only keep features that exist in the CSV ──
+    available = [f for f in FEATURES if f in df.columns]
+    missing   = [f for f in FEATURES if f not in df.columns]
+    if missing:
+        print(f"⚠️  Missing features (will be skipped): {missing}")
+
+    X = df[available].copy()
+
+    # ── Fill NaN with 0 — XGBoost handles NaN natively but be safe ──
+    X = X.fillna(0.0)
     y = df['target']
-    
-    print("Features description to verify non-zero values:")
+
+    print("\nFeature description (verify non-zero values):")
     print(X.describe())
-    
-    # Train
-    model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
-    
-    # Cross validation (5-fold)
-    cv_results = cross_validate(model, X, y, cv=5, scoring=['accuracy', 'precision', 'recall'])
-    
-    acc = cv_results['test_accuracy'].mean()
-    prec = cv_results['test_precision'].mean()
-    rec = cv_results['test_recall'].mean()
-    
-    # Fit on all data for feature importances and saving
+    print(f"\nClass balance  —  win: {y.sum()}  loss: {(y==0).sum()}")
+
+    # ── XGBoost ──
+    model = XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        use_label_encoder=False,
+        eval_metric='logloss',
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    cv_results = cross_validate(
+        model, X, y, cv=cv,
+        scoring=['accuracy', 'precision', 'recall'],
+        error_score='raise'
+    )
+
+    acc  = float(cv_results['test_accuracy'].mean())
+    prec = float(cv_results['test_precision'].mean())
+    rec  = float(cv_results['test_recall'].mean())
+
+    # Fit on all data for importances and saving
     model.fit(X, y)
-    
+
     importances = model.feature_importances_
-    feat_imp = {feat: round(float(imp), 4) for feat, imp in zip(features, importances)}
-    
-    # Sort feature importances
-    feat_imp = dict(sorted(feat_imp.items(), key=lambda item: item[1], reverse=True))
-    
+    feat_imp = {f: round(float(i), 4) for f, i in zip(available, importances)}
+    feat_imp = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
+
     # Save model
     models_dir = os.path.join(parent_dir, 'models')
     os.makedirs(models_dir, exist_ok=True)
-    model_path = os.path.join(models_dir, 'volume_delta_rf.pkl')
-    joblib.dump(model, model_path)
-    
-    print(f"Accuracy: {acc:.2f}")
+    model_path = os.path.join(models_dir, 'volume_delta_xgb.pkl')
+    joblib.dump({'model': model, 'features': available}, model_path)
+
+    print(f"\nAccuracy:  {acc:.2f}")
     print(f"Precision: {prec:.2f}")
-    print(f"Recall: {rec:.2f}")
+    print(f"Recall:    {rec:.2f}")
     print(f"Feature Importances: {feat_imp}")
-    
+    print(f"Model saved → {model_path}")
+
     return {
-        "accuracy": round(float(acc), 2),
-        "precision": round(float(prec), 2),
-        "recall": round(float(rec), 2),
+        "accuracy":            round(acc,  2),
+        "precision":           round(prec, 2),
+        "recall":              round(rec,  2),
         "feature_importances": feat_imp,
-        "training_samples": len(df)
+        "training_samples":    len(df),
+        "features_used":       available,
+        "features_missing":    missing,
     }
 
 if __name__ == "__main__":
