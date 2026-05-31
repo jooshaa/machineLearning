@@ -765,38 +765,55 @@ async def backtest_volume_delta():
     for chunk in strategy_volume_delta.stream_main():
         all_signals.extend(chunk)
 
-    model_path = "models/volume_delta_rf.pkl"
+    model_path = "models/volume_delta_xgb.pkl"
+    if not os.path.exists(model_path):
+        model_path = "models/volume_delta_rf.pkl"
+
     if os.path.exists(model_path):
         import joblib
         import numpy as np
+        import pandas as pd
 
-        model = joblib.load(model_path)
+        model_dict = joblib.load(model_path)
         
-        features = ["sl_distance", "reward_risk", "absorption", "hour", "score", "day_of_week", "impulse_points"]
+        if isinstance(model_dict, dict) and 'model' in model_dict and 'features' in model_dict:
+            model = model_dict['model']
+            features = model_dict['features']
+        else:
+            model = model_dict
+            features = ["sl_distance", "reward_risk", "absorption", "hour", "score", "day_of_week", "impulse_points"]
+            
+        print(f"Total signals before ML filter: {len(all_signals)}")
         
         filtered_signals = []
         for signal in all_signals:
             try:
-                entry_dt = pd.to_datetime(signal['entry_time'].replace('Z', ''))
+                entry_dt = pd.to_datetime(str(signal.get('entry_time', '')).replace('Z', ''))
                 signal["hour"] = entry_dt.hour
                 signal["day_of_week"] = entry_dt.dayofweek
-                signal["impulse_points"] = abs(signal.get('tp_price', 0) - signal.get('entry_price', 0))
-                signal["absorption"] = int(signal.get('absorption', False))
+                
+                for col in ['absorption', 'exhaustion', 'ob_large_limit', 'ob_layering']:
+                    if col in signal:
+                        signal[col] = int(signal[col])
 
-                X = [[signal.get(f, 0) for f in features]]
-                prediction = model.predict(X)[0]
-                ml_proba = model.predict_proba(X)[0][1]
-                signal["ml_prediction"] = int(prediction)
-                signal["ml_confidence"] = round(float(ml_proba), 3)
-                signal["ml_probability"] = round(float(ml_proba), 3)
+                X_df = pd.DataFrame([{f: float(signal.get(f, 0.0)) for f in features}])
+                
+                prediction = int(model.predict(X_df)[0])
+                ml_proba = float(model.predict_proba(X_df)[0][1])
+                
+                signal["ml_prediction"] = prediction
+                signal["ml_confidence"] = round(ml_proba, 3)
+                signal["ml_probability"] = round(ml_proba, 3)
 
-                if prediction == 1:  # ML says "win" — keep signal
+                if prediction == 1:
                     filtered_signals.append(signal)
-            except:
+            except Exception as e:
+                print(f"ML Error: {e}")
                 signal['ml_prediction'] = None
                 signal['ml_confidence'] = None
                 signal['ml_probability'] = None
         
+        print(f"Signals after ML filter: {len(filtered_signals)}")
         all_signals = filtered_signals
     else:
         for signal in all_signals:
