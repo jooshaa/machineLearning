@@ -452,11 +452,11 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             entry_price = touch_price
             
-            # ── Dynamic SL: behind the big delta zone ──
+            # ── Dynamic SL: structural stop behind impulse start ──
             if imp_type == 'up':
-                sl_price = largest_delta_zone_price - SL_ZONE_BUFFER
+                sl_price = imp['price_start'] - SL_ZONE_BUFFER
             else:
-                sl_price = largest_delta_zone_price + SL_ZONE_BUFFER
+                sl_price = imp['price_start'] + SL_ZONE_BUFFER
             
             # Enforce a larger minimum SL to prevent getting stopped out by noise
             # (User previously requested 100, let's set min SL to 40, max to 120)
@@ -470,8 +470,9 @@ def backtest(features_df, impulses, mbo_df, filename):
             sl_distance = abs(entry_price - sl_price)
             
             # Dynamic TP based on varying RR depending on the impulse strength
-            # So that reward_risk has variance for the ML model
-            reward_risk_ratio = 1.5 if imp['points'] > 200 else 1.0
+            # So that reward_risk has continuous variance for the ML model
+            raw_rr = imp['points'] / sl_distance if sl_distance > 0 else 1.0
+            reward_risk_ratio = max(1.0, min(raw_rr, 3.0))  # Cap between 1:1 and 1:3
             
             if imp_type == 'up':
                 tp_price = entry_price + (sl_distance * reward_risk_ratio)
