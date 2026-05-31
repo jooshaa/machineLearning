@@ -548,6 +548,7 @@ def backtest(features_df, impulses, mbo_df, filename):
 
 def stream_main():
     print("🚀 Starting Volume Delta Profile Strategy Backtest (Stream Mode)...")
+    all_signals = []
     
     cache_dir = "data/raw/mbo/NQ"
     if not os.path.exists(cache_dir):
@@ -612,7 +613,9 @@ def stream_main():
             if not signals_df.empty:
                 print(f"Generated {len(signals_df)} signals for {filename}")
                 # Yield signals as dicts
-                yield signals_df.to_dict(orient='records')
+                chunk_records = signals_df.to_dict(orient='records')
+                all_signals.extend(chunk_records)
+                yield chunk_records
                 
         except Exception as e:
             print(f"Error processing {filename}: {e}")
@@ -624,6 +627,13 @@ def stream_main():
             if 'signals_df' in locals():
                 del signals_df
             gc.collect()
+
+    # After all files processed, save CSV
+    if all_signals:
+        result_df = pd.DataFrame(all_signals)
+        os.makedirs("orderflow_ml", exist_ok=True)
+        result_df.to_csv("orderflow_ml/volume_delta_dataset.csv", index=False)
+        print(f"✅ CSV saved: {len(result_df)} signals")
 
 def main():
     all_signals = []
