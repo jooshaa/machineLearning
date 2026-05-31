@@ -452,16 +452,31 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             entry_price = touch_price
             
-            # ── Fixed SL: 100 points, Fixed TP: 100 points (1:1 RR) ──
+            # ── Dynamic SL: behind the big delta zone ──
             if imp_type == 'up':
-                sl_price = entry_price - 100
-                tp_price = entry_price + 100
+                sl_price = largest_delta_zone_price - SL_ZONE_BUFFER
             else:
-                sl_price = entry_price + 100
-                tp_price = entry_price - 100
+                sl_price = largest_delta_zone_price + SL_ZONE_BUFFER
+            
+            # Enforce a larger minimum SL to prevent getting stopped out by noise
+            # (User previously requested 100, let's set min SL to 40, max to 120)
+            if imp_type == 'up':
+                sl_price = min(sl_price, entry_price - 40)
+                sl_price = max(sl_price, entry_price - 120)
+            else:
+                sl_price = max(sl_price, entry_price + 40)
+                sl_price = min(sl_price, entry_price + 120)
                 
-            sl_distance = 100
-            reward_risk_ratio = 1.0  # 1:1 RR
+            sl_distance = abs(entry_price - sl_price)
+            
+            # Dynamic TP based on varying RR depending on the impulse strength
+            # So that reward_risk has variance for the ML model
+            reward_risk_ratio = 1.5 if imp['points'] > 200 else 1.0
+            
+            if imp_type == 'up':
+                tp_price = entry_price + (sl_distance * reward_risk_ratio)
+            else:
+                tp_price = entry_price - (sl_distance * reward_risk_ratio)
             
             end_time = entry_time + np.timedelta64(4, 'h')
 
