@@ -230,12 +230,12 @@ def check_orderbook_state(mbo_df, target_price, touch_time, direction):
     tick_size = 0.25
     tolerance = 2 * tick_size
     
-    # Filter adds
+    # Filter adds (10 contracts is a solid institutional limit order on NQ)
     adds = mbo_df[(mbo_df.index.values <= np.datetime64(touch_time)) & 
                   (mbo_df['action'] == 'A') & 
                   (mbo_df['side'] == side) &
                   (abs(mbo_df['price'] - target_price) <= tolerance) &
-                  (mbo_df['size'] > 200)]
+                  (mbo_df['size'] >= 10)]
                   
     if adds.empty:
         return False, False
@@ -535,7 +535,9 @@ def backtest(features_df, impulses, mbo_df, filename):
                 mbo_df, target_price, touch_time, 'buy' if imp_type == 'up' else 'sell'
             )
 
-            session = 0 if c_ts.hour < 8 else (1 if c_ts.hour < 13 else 2)
+            # US Market open is 14:30 UTC. 
+            # session 0: Pre-market (<14 UTC), 1: Morning (14-17 UTC), 2: Afternoon (>17 UTC)
+            session = 0 if c_ts.hour < 14 else (1 if c_ts.hour < 17 else 2)
 
             volatility = round(float(candles['high'].sub(candles['low']).rolling(20).std().fillna(0.0).iloc[-1]), 2) if len(candles) >= 20 else 0.0
 
