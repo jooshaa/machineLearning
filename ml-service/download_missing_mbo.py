@@ -65,6 +65,8 @@ def download_missing_mbo(dates=None):
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 
                 # Fetch data
+                # Fix OOM: Stream directly to a temporary DBN file on disk
+                temp_dbn = cache_path.replace(".parquet", ".dbn")
                 data = client.timeseries.get_range(
                     dataset="GLBX.MDP3",
                     schema="mbo",
@@ -72,17 +74,26 @@ def download_missing_mbo(dates=None):
                     stype_in="parent",
                     start=start,
                     end=end,
+                    path=temp_dbn
                 )
                 
-                df = data.to_df()
-                if df.empty:
+                # Convert directly to Parquet using Databento's Rust backend (Memory Efficient!)
+                data.to_parquet(cache_path)
+                
+                # Cleanup the temp DBN file
+                if os.path.exists(temp_dbn):
+                    os.remove(temp_dbn)
+                    
+                import pyarrow.parquet as pq
+                num_rows = pq.read_metadata(cache_path).num_rows
+                
+                if num_rows == 0:
                     print(f"⚠️ No data returned for {date_str}. This might be a weekend or holiday.")
+                    os.remove(cache_path)
                     summary["failed"] += 1
                     break
                     
-                # Save as parquet
-                df.to_parquet(cache_path)
-                print(f"✅ Successfully downloaded and saved {date_str} ({len(df)} rows)")
+                print(f"✅ Successfully downloaded and saved {date_str} ({num_rows} rows)")
                 summary["downloaded"] += 1
                 break
                 
