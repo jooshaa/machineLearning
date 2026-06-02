@@ -13,17 +13,25 @@ for date in dates:
         print(f"⏩ {date} already exists in cache. Skipping.")
         continue
         
-    try:
-        data = client.timeseries.get_range(
-            dataset="GLBX.MDP3",
-            schema="ohlcv-1m",
-            symbols=["NQ.FUT"],
-            stype_in="parent",
-            start=f"{date}T08:00:00Z",
-            end=f"{date}T21:00:00Z",
-        )
-        df = data.to_df()
-        df.to_parquet(out_path)
-        print(f"✅ Saved {date} ({len(df)} rows)")
-    except Exception as e:
-        print(f"❌ Failed to download OHLCV for {date}: {e}")
+    import time
+    retries = 3
+    for attempt in range(retries):
+        try:
+            data = client.timeseries.get_range(
+                dataset="GLBX.MDP3",
+                schema="ohlcv-1m",
+                symbols=["NQ.FUT"],
+                stype_in="parent",
+                start=f"{date}T08:00:00Z",
+                end=f"{date}T21:00:00Z",
+            )
+            df = data.to_df()
+            df.to_parquet(out_path)
+            print(f"✅ Saved {date} ({len(df)} rows)")
+            break
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"⚠️ Error downloading {date}: {e}. Retrying in 3 seconds...")
+                time.sleep(3)
+            else:
+                print(f"❌ Failed to download OHLCV for {date} after {retries} attempts: {e}")
