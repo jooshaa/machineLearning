@@ -9,6 +9,10 @@ dates = sys.argv[1:] if len(sys.argv) > 1 else []
 for date in dates:
     out_path = f"data/raw/ohlcv/NQ/{date}.parquet"
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    if os.path.exists(out_path):
+        print(f"⏩ {date} already exists in cache. Skipping.")
+        continue
+        
     try:
         data = client.timeseries.get_range(
             dataset="GLBX.MDP3",
