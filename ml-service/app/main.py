@@ -762,8 +762,22 @@ async def backtest_volume_delta():
 
     # Accumulate signals
     all_signals = []
-    for chunk in strategy_volume_delta.stream_main():
-        all_signals.extend(chunk)
+    csv_path = "orderflow_ml/volume_delta_dataset.csv"
+    
+    if os.path.exists(csv_path):
+        print("Loading signals from precomputed CSV...")
+        try:
+            df = pd.read_csv(csv_path)
+            # Ensure nan values are replaced with None or defaults before converting to dict
+            df = df.replace({pd.NA: None, float('nan'): None})
+            all_signals = df.to_dict('records')
+        except Exception as e:
+            print(f"Error loading CSV: {e}")
+            all_signals = []
+            
+    if not all_signals:
+        for chunk in strategy_volume_delta.stream_main():
+            all_signals.extend(chunk)
 
     model_path = "models/volume_delta_xgb.pkl"
     if not os.path.exists(model_path):
