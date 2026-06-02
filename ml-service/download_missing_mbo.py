@@ -46,9 +46,10 @@ def download_missing_mbo(dates=None):
     
     for date_str in dates:
         cache_path = get_mbo_cache_path(SYMBOL, date_str)
+        holiday_path = cache_path.replace('.parquet', '.holiday')
         
-        if os.path.exists(cache_path):
-            print(f"⏩ {date_str} already exists in cache. Skipping.")
+        if os.path.exists(cache_path) or os.path.exists(holiday_path):
+            print(f"⏩ {date_str} already exists in cache (or is a known holiday). Skipping.")
             summary["skipped"] += 1
             continue
             
@@ -85,11 +86,19 @@ def download_missing_mbo(dates=None):
                     os.remove(temp_dbn)
                     
                 import pyarrow.parquet as pq
-                num_rows = pq.read_metadata(cache_path).num_rows
+                try:
+                    num_rows = pq.read_metadata(cache_path).num_rows
+                except FileNotFoundError:
+                    # If to_parquet didn't create a file, there was no data (weekend/holiday)
+                    print(f"⚠️ No data returned for {date_str}. This is a weekend or holiday.")
+                    open(cache_path.replace('.parquet', '.holiday'), 'w').close()
+                    summary["failed"] += 1
+                    break
                 
                 if num_rows == 0:
                     print(f"⚠️ No data returned for {date_str}. This might be a weekend or holiday.")
                     os.remove(cache_path)
+                    open(cache_path.replace('.parquet', '.holiday'), 'w').close()
                     summary["failed"] += 1
                     break
                     
