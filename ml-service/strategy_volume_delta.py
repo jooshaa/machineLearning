@@ -475,28 +475,39 @@ def backtest(features_df, impulses, mbo_df, filename):
             r_multiple = 0.0
             bars_to_outcome = 0
 
+            # ── Critical fix: skip trades with < 3 hours of post-signal data ──
+            # This prevents false WINs near end of trading session (e.g. entry at 20:30
+            # only has 30 min of data so a tiny bounce falsely hits TP before real SL)
             if not post_signal.empty:
-                if imp_type == 'up':
-                    hits_tp = post_signal[post_signal['price'].values >= tp_price]
-                    hits_sl = post_signal[post_signal['price'].values <= sl_price]
+                actual_coverage_hours = float(
+                    (post_signal.index.values[-1] - entry_time) / np.timedelta64(1, 'h')
+                )
+                if actual_coverage_hours < 3.0:
+                    outcome = 'timeout'
+                    result = '0R'
+                    r_multiple = 0.0
                 else:
-                    hits_tp = post_signal[post_signal['price'].values <= tp_price]
-                    hits_sl = post_signal[post_signal['price'].values >= sl_price]
+                    if imp_type == 'up':
+                        hits_tp = post_signal[post_signal['price'].values >= tp_price]
+                        hits_sl = post_signal[post_signal['price'].values <= sl_price]
+                    else:
+                        hits_tp = post_signal[post_signal['price'].values <= tp_price]
+                        hits_sl = post_signal[post_signal['price'].values >= sl_price]
 
-                sentinel = np.datetime64('2100-01-01')
-                t_tp = hits_tp.index.values.min() if not hits_tp.empty else sentinel
-                t_sl = hits_sl.index.values.min() if not hits_sl.empty else sentinel
+                    sentinel = np.datetime64('2100-01-01')
+                    t_tp = hits_tp.index.values.min() if not hits_tp.empty else sentinel
+                    t_sl = hits_sl.index.values.min() if not hits_sl.empty else sentinel
 
-                if t_tp < t_sl and t_tp != sentinel:
-                    outcome = 'win'
-                    r_multiple = round(reward_risk_ratio, 2)
-                    result = f'+{r_multiple}R'
-                    bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
-                elif t_sl < t_tp and t_sl != sentinel:
-                    outcome = 'loss'
-                    r_multiple = -1.0
-                    result = '-1R'
-                    bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
+                    if t_tp < t_sl and t_tp != sentinel:
+                        outcome = 'win'
+                        r_multiple = round(reward_risk_ratio, 2)
+                        result = f'+{r_multiple}R'
+                        bars_to_outcome = int((t_tp - entry_time) / np.timedelta64(1, 'm'))
+                    elif t_sl < t_tp and t_sl != sentinel:
+                        outcome = 'loss'
+                        r_multiple = -1.0
+                        result = '-1R'
+                        bars_to_outcome = int((t_sl - entry_time) / np.timedelta64(1, 'm'))
 
             if imp_type != 'up':
                 print(f"\nSELL AUDIT: entry={entry_price:.2f}, tp={tp_price:.2f}, sl={sl_price:.2f}")
