@@ -474,6 +474,10 @@ def backtest(features_df, impulses, mbo_df, filename):
             result = '0R'
             r_multiple = 0.0
             bars_to_outcome = 0
+            
+            sentinel = np.datetime64('2100-01-01')
+            t_tp = sentinel
+            t_sl = sentinel
 
             # ── Critical fix: skip trades with < 3 hours of post-signal data ──
             # This prevents false WINs near end of trading session (e.g. entry at 20:30
