@@ -124,8 +124,8 @@ export function fetchCandles(payload: {
   );
 }
 
-export function fetchLocalCandles(date: string, timeframe: string = '5m') {
-  return fetch(`http://localhost:8000/candles/${date}?timeframe=${timeframe}`)
+export function fetchLocalCandles(date: string, timeframe: string = '5m', symbol: string = 'NQ') {
+  return fetch(`http://localhost:8000/candles/${date}?timeframe=${timeframe}&symbol=${symbol}`)
     .then(res => {
       if (!res.ok) throw new Error(`Failed to fetch candles: ${res.statusText}`);
       return res.json();
@@ -147,9 +147,10 @@ export function runFabioBacktest(payload: Record<string, unknown>) {
   });
 }
 
-export function runVolumeDeltaBacktest() {
+export function runVolumeDeltaBacktest(symbol: string = 'NQ') {
   return fetchJson<any>('/backtests/volume-delta', {
     method: 'POST',
+    body: JSON.stringify({ symbol }),
   });
 }
 

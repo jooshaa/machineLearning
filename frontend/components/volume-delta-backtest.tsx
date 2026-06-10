@@ -6,6 +6,8 @@ import { createChart, CandlestickSeries, createSeriesMarkers, Time, SeriesMarker
 
 const TIMEFRAMES = ['1m', '5m', '15m', '1H'] as const;
 type Timeframe = typeof TIMEFRAMES[number];
+const SYMBOLS = ['NQ', 'GC'] as const;
+type AssetSymbol = typeof SYMBOLS[number];
 
 export function VolumeDeltaBacktest() {
   const [loading, setLoading] = useState(false);
@@ -15,6 +17,7 @@ export function VolumeDeltaBacktest() {
   const [candles, setCandles] = useState<any[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
   const [timeframe, setTimeframe] = useState<Timeframe>('5m');
+  const [symbol, setSymbol] = useState<AssetSymbol>('NQ');
 
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
@@ -23,7 +26,7 @@ export function VolumeDeltaBacktest() {
     setLoading(true);
     setError(null);
     try {
-      const res = await runVolumeDeltaBacktest();
+      const res = await runVolumeDeltaBacktest(symbol);
       setResult(res);
       setSelectedSignal(null);
       setCandles([]);
@@ -42,7 +45,7 @@ export function VolumeDeltaBacktest() {
       setChartLoading(true);
       try {
         const date = selectedSignal.entry_time.substring(0, 10);
-        const res = await fetchLocalCandles(date, timeframe);
+        const res = await fetchLocalCandles(date, timeframe, symbol);
         const candleArray = Array.isArray(res) ? res : (res.candles ?? []);
 setCandles(candleArray);
 console.log('first candle:', res.candles[0]);
@@ -162,15 +165,33 @@ console.log('total candles:', res.candles.length);
 
   return (
     <div className="card-ink p-6 space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex justify-between items-center flex-wrap gap-3">
         <h2 className="text-xl font-bold">🌊 Volume Delta Profile Strategy</h2>
-        <button
-          onClick={handleRun}
-          disabled={loading}
-          className="btn-ink px-6 py-3"
-        >
-          {loading ? 'Running Backtest...' : '🚀 Run Backtest'}
-        </button>
+        <div className="flex items-center gap-3">
+          {/* Asset Selector */}
+          <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
+            {SYMBOLS.map(s => (
+              <button
+                key={s}
+                onClick={() => { setSymbol(s); setResult(null); setSelectedSignal(null); }}
+                className={`px-4 py-1.5 text-sm font-bold rounded-md transition-all ${
+                  symbol === s
+                    ? 'bg-white shadow text-indigo-600'
+                    : 'text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {s === 'GC' ? '🥇 GC' : '📈 NQ'}
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={handleRun}
+            disabled={loading}
+            className="btn-ink px-6 py-3"
+          >
+            {loading ? 'Running Backtest...' : '🚀 Run Backtest'}
+          </button>
+        </div>
       </div>
 
       {error && <p className="text-coral text-center">{error}</p>}

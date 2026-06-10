@@ -21,8 +21,9 @@ FEATURES = [
 ]
 
 def train_model():
-    print("Reading signals from CSV...")
-    csv_path = os.path.join(parent_dir, "orderflow_ml", "volume_delta_dataset.csv")
+    SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
+    clean_symbol = SYMBOL.split('.')[0]
+    csv_path = os.path.join(parent_dir, "orderflow_ml", f"volume_delta_dataset_{clean_symbol}_2024.csv")
 
     if not os.path.exists(csv_path):
         return {"error": f"CSV not found at {csv_path}"}

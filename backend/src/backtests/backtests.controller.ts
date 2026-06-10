@@ -28,8 +28,8 @@ export class BacktestsController {
   }
 
   @Post('volume-delta')
-  async runVolumeDelta() {
-    return this.backtestsService.runVolumeDeltaBacktest();
+  async runVolumeDelta(@Body() dto: Record<string, unknown>) {
+    return this.backtestsService.runVolumeDeltaBacktest(dto);
   }
 
   @Post('fabio/l3')

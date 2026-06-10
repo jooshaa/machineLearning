@@ -744,14 +744,25 @@ def api_backtest_fabio(request: FabioBacktestRequest):
 CACHE_PATH = "data/backtest_cache.json"
 
 @app.post("/backtest-volume-delta")
-async def backtest_volume_delta():
+async def backtest_volume_delta(request: Request):
     import pandas as pd
 
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    
+    symbol = body.get('symbol', 'NQ')
+    clean_symbol = symbol.split('.')[0].upper()
+    
+    # Use symbol-specific cache
+    cache_path = f"data/backtest_cache_{clean_symbol}.json"
+
     # Check cache first
-    if os.path.exists(CACHE_PATH):
-        cache_age = datetime.now(timezone.utc).timestamp() - os.path.getmtime(CACHE_PATH)
+    if os.path.exists(cache_path):
+        cache_age = datetime.now(timezone.utc).timestamp() - os.path.getmtime(cache_path)
         if cache_age < 86400:  # 24 hours
-            with open(CACHE_PATH, 'r') as f:
+            with open(cache_path, 'r') as f:
                 return json.load(f)
 
     def serialize_signal(signal: dict) -> dict:
@@ -762,10 +773,17 @@ async def backtest_volume_delta():
 
     # Accumulate signals
     all_signals = []
-    csv_path = "orderflow_ml/volume_delta_dataset.csv"
+    # Try symbol-specific combined CSV first, then 2024 CSV
+    csv_candidates = [
+        f"orderflow_ml/volume_delta_dataset_{clean_symbol}_COMBINED.csv",
+        f"orderflow_ml/volume_delta_dataset_{clean_symbol}_2024.csv",
+        f"orderflow_ml/volume_delta_dataset_{clean_symbol}.csv",
+        "orderflow_ml/volume_delta_dataset.csv",  # fallback for NQ
+    ]
+    csv_path = next((p for p in csv_candidates if os.path.exists(p)), None)
     
-    if os.path.exists(csv_path):
-        print("Loading signals from precomputed CSV...")
+    if csv_path:
+        print(f"Loading signals from {csv_path}...")
         try:
             df = pd.read_csv(csv_path)
             # Ensure nan values are replaced with None or defaults before converting to dict
@@ -779,7 +797,12 @@ async def backtest_volume_delta():
         for chunk in strategy_volume_delta.stream_main():
             all_signals.extend(chunk)
 
-    model_path = "models/volume_delta_xgb.pkl"
+    # Load symbol-specific model
+    model_path = f"models/volume_delta_xgb_{clean_symbol}.FUT.pkl"
+    if not os.path.exists(model_path):
+        model_path = f"models/volume_delta_xgb_{clean_symbol}.pkl"
+    if not os.path.exists(model_path):
+        model_path = "models/volume_delta_xgb.pkl"
     if not os.path.exists(model_path):
         model_path = "models/volume_delta_rf.pkl"
 
@@ -862,7 +885,7 @@ async def backtest_volume_delta():
 
     # Save to cache
     os.makedirs("data", exist_ok=True)
-    with open(CACHE_PATH, 'w') as f:
+    with open(cache_path, 'w') as f:
         json.dump(result, f)
 
     return result
@@ -873,6 +896,7 @@ async def get_candles(
     timeframe: str = "5min",
     days_before: int = 7,
     days_after: int = 1,
+    symbol: str = "NQ",
 ):
     try:
         from datetime import date as dt_date, timedelta
@@ -890,7 +914,8 @@ async def get_candles(
         resample_rule = timeframe_map.get(timeframe, "5min")
 
         base_date = dt_date.fromisoformat(date)
-        data_dir = "data/raw/ohlcv/NQ"
+        clean_symbol = symbol.split('.')[0].upper()
+        data_dir = f"data/raw/ohlcv/{clean_symbol}"
 
         # Collect all available parquet files in the requested range
         frames = []

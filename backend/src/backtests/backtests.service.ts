@@ -301,7 +301,7 @@ export class BacktestsService {
     return response.json();
   }
 
-  async runVolumeDeltaBacktest() {
+  async runVolumeDeltaBacktest(dto: Record<string, unknown> = {}) {
     const { fetch: undiciFetch, Agent } = await import('undici');
     
     const agent = new Agent({
@@ -313,6 +313,7 @@ export class BacktestsService {
     const response = await undiciFetch(`${this.mlServiceUrl}/backtest-volume-delta`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(dto),
       dispatcher: agent,
     } as any);
 
