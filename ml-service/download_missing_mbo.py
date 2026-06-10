@@ -28,10 +28,10 @@ SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
 DATASET_MAP = {
     "NQ.FUT": "GLBX.MDP3",
     "ES.FUT": "GLBX.MDP3",
-    "GC.FUT": "XCEC.MDP3",
-    "CL.FUT": "XNYM.MDP3",
-    "SI.FUT": "XCEC.MDP3", # Silver
-    "HG.FUT": "XCEC.MDP3", # Copper
+    "GC.FUT": "GLBX.MDP3",   # Gold trades electronically on CME Globex
+    "CL.FUT": "GLBX.MDP3",   # Crude Oil also on Globex
+    "SI.FUT": "GLBX.MDP3",   # Silver
+    "HG.FUT": "GLBX.MDP3",   # Copper
 }
 DATASET = DATASET_MAP.get(SYMBOL, "GLBX.MDP3")
 
@@ -78,7 +78,11 @@ def download_missing_mbo(dates=None):
                 
                 # Fetch data
                 # Fix OOM: Stream directly to a temporary DBN file on disk
-                temp_dbn = cache_path.replace(".parquet", ".dbn")
+                # Use ASCII-safe path to avoid latin-1 codec issues with XCEC/COMEX metadata
+                import tempfile
+                temp_dir = os.path.dirname(cache_path)
+                temp_dbn = os.path.join(temp_dir, f"temp_{date_str}.dbn")
+                
                 data = client.timeseries.get_range(
                     dataset=DATASET,
                     schema="mbo",
