@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sklearn.compose import ColumnTransformer

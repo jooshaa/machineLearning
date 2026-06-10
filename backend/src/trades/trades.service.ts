@@ -35,6 +35,7 @@ export class TradesService {
 
   async findLatest() {
     return this.tradesRepository.findOne({
+      where: {},
       order: {
         createdAt: 'DESC',
       },
