@@ -71,12 +71,12 @@ def run_pipeline():
             print(f"⚠️ Warning: No {temp_csv} found for this month.")
 
         # 5. Cleanup Parquet files to free disk space!
-        print("🗑️ Cleaning up .parquet files to free 10GB of disk space...")
-        deleted_count = 0
-        for f in glob.glob(f"data/raw/mbo/{clean_symbol}/*.parquet") + glob.glob(f"data/raw/mbo/{clean_symbol}/*.holiday"):
-            os.remove(f)
-            deleted_count += 1
-        print(f"🧹 Deleted {deleted_count} large files.")
+        # print("🗑️ Cleaning up .parquet files to free 10GB of disk space...")
+        # deleted_count = 0
+        # for f in glob.glob(f"data/raw/mbo/{clean_symbol}/*.parquet") + glob.glob(f"data/raw/mbo/{clean_symbol}/*.holiday"):
+        #     os.remove(f)
+        #     deleted_count += 1
+        # print(f"🧹 Deleted {deleted_count} large files.")
         
         print(f"✅ Finished chunk {start_date} - {end_date}\n")
         time.sleep(5) # Small pause before next month

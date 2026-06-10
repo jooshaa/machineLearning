@@ -640,7 +640,8 @@ def stream_main():
     print("🚀 Starting Volume Delta Profile Strategy Backtest (Stream Mode)...")
     all_signals = []
     
-    cache_dir = "data/raw/mbo/NQ"
+    clean_symbol = SYMBOL.split('.')[0]
+    cache_dir = f"data/raw/mbo/{clean_symbol}"
     if not os.path.exists(cache_dir):
         print(f"Cache directory {cache_dir} missing. Creating mock data for demonstration.")
         create_mock_data()
