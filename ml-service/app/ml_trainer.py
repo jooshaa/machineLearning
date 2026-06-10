@@ -100,9 +100,10 @@ def train_model():
     feat_imp = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
 
     # Save model
+    SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
     models_dir = os.path.join(parent_dir, 'models')
     os.makedirs(models_dir, exist_ok=True)
-    model_path = os.path.join(models_dir, 'volume_delta_xgb.pkl')
+    model_path = os.path.join(models_dir, f'volume_delta_xgb_{SYMBOL}.pkl')
     joblib.dump({'model': model, 'features': available}, model_path)
 
     print(f"\nAccuracy:  {acc:.2f}")

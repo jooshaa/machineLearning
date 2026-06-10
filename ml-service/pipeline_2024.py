@@ -6,22 +6,23 @@ import glob
 from download_missing_mbo import download_missing_mbo
 
 def run_pipeline():
-    # 1. Define 2024 months (First 6 months only)
+    # 1. Define 2024 months (Resuming from March)
     months = [
-        ("2024-01-01", "2024-01-31"),
-        ("2024-02-01", "2024-02-29"),
         ("2024-03-01", "2024-03-31"),
         ("2024-04-01", "2024-04-30"),
         ("2024-05-01", "2024-05-31"),
         ("2024-06-01", "2024-06-30"),
     ]
     
+    SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
+    clean_symbol = SYMBOL.split('.')[0]
+    
     # Path for the master 2024 dataset
-    master_csv = "orderflow_ml/volume_delta_dataset_2024.csv"
-    temp_csv = "orderflow_ml/volume_delta_dataset.csv"
+    master_csv = f"orderflow_ml/volume_delta_dataset_{clean_symbol}_2024.csv"
+    temp_csv = f"orderflow_ml/volume_delta_dataset_{clean_symbol}.csv"
     
     print(f"⚠️ Initial disk cleanup to ensure safe start...")
-    for f in glob.glob("data/raw/mbo/NQ/*.parquet") + glob.glob("data/raw/mbo/NQ/*.holiday"):
+    for f in glob.glob(f"data/raw/mbo/{clean_symbol}/*.parquet") + glob.glob(f"data/raw/mbo/{clean_symbol}/*.holiday"):
         os.remove(f)
 
     for start_date, end_date in months:
@@ -70,7 +71,7 @@ def run_pipeline():
         # 5. Cleanup Parquet files to free disk space!
         print("🗑️ Cleaning up .parquet files to free 10GB of disk space...")
         deleted_count = 0
-        for f in glob.glob("data/raw/mbo/NQ/*.parquet") + glob.glob("data/raw/mbo/NQ/*.holiday"):
+        for f in glob.glob(f"data/raw/mbo/{clean_symbol}/*.parquet") + glob.glob(f"data/raw/mbo/{clean_symbol}/*.holiday"):
             os.remove(f)
             deleted_count += 1
         print(f"🧹 Deleted {deleted_count} large files.")

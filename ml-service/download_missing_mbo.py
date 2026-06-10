@@ -23,10 +23,21 @@ DEFAULT_TARGET_DATES = [
     "2026-05-12", "2026-05-13", "2026-05-14"
 ]
 
-SYMBOL = "NQ.FUT"
+SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
+
+DATASET_MAP = {
+    "NQ.FUT": "GLBX.MDP3",
+    "ES.FUT": "GLBX.MDP3",
+    "GC.FUT": "XCEC.MDP3",
+    "CL.FUT": "XNYM.MDP3",
+    "SI.FUT": "XCEC.MDP3", # Silver
+    "HG.FUT": "XCEC.MDP3", # Copper
+}
+DATASET = DATASET_MAP.get(SYMBOL, "GLBX.MDP3")
+
 # Broad window to capture pre-market discretionary trades (London Open to NY Close)
 START_TIME = "08:00:00" 
-END_TIME = "21:00:00"   
+END_TIME = "21:00:00"
 
 def download_missing_mbo(dates=None):
     if dates is None:
@@ -69,7 +80,7 @@ def download_missing_mbo(dates=None):
                 # Fix OOM: Stream directly to a temporary DBN file on disk
                 temp_dbn = cache_path.replace(".parquet", ".dbn")
                 data = client.timeseries.get_range(
-                    dataset="GLBX.MDP3",
+                    dataset=DATASET,
                     schema="mbo",
                     symbols=[SYMBOL],
                     stype_in="parent",

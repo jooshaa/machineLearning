@@ -8,17 +8,38 @@ import gc
 from app.engine.orderbook import process_mbo_stream
 from app.engine.features import extract_l3_features
 
-# Parameters
-IMPULSE_MIN_POINTS = 120      # minimum NQ points for valid impulse (raised for quality)
+# ── Multi-Asset Configuration ──
+SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
+
+if SYMBOL == "GC.FUT":
+    # Gold (GC) Parameters
+    # GC: 1 point = $100 per contract. 10pt SL = $1000 risk.
+    TICK_SIZE = 0.10
+    SL_DISTANCE_POINTS = 10       # $1000 per contract (entry 4300 → SL 4290)
+    TP_DISTANCE_POINTS = 15       # $1500 per contract (1.5R)
+    IMPULSE_MIN_POINTS = 10       # Structural move for Gold
+    TP_POINTS = 10
+    SL_ZONE_BUFFER = 2
+    SL_FALLBACK_MIN = 3
+    TOUCH_TOLERANCE = 0.5         # 5 ticks tolerance
+    CONSOLIDATION_RANGE = 5       # 50 ticks
+else:
+    # Default NASDAQ (NQ) Parameters
+    TICK_SIZE = 0.25
+    SL_DISTANCE_POINTS = 100      # $2000 per contract
+    TP_DISTANCE_POINTS = 100
+    IMPULSE_MIN_POINTS = 120
+    TP_POINTS = 75
+    SL_ZONE_BUFFER = 5
+    SL_FALLBACK_MIN = 10
+    TOUCH_TOLERANCE = 5.0
+    CONSOLIDATION_RANGE = 50
+
+# General Parameters
 IMPULSE_MAX_DURATION_MIN = 120
 MIN_IMPULSE_CANDLES = 3       # minimum 1-min candles for a valid impulse
 MIN_DELTA_CONTRACTS = 50      # minimum net delta at stopping zone (raised)
-TP_POINTS = 75                # take profit in NQ points  
-SL_ZONE_BUFFER = 5            # points behind the delta zone extreme for SL
-SL_FALLBACK_MIN = 10          # minimum SL distance if zone is too close to entry
-TOUCH_TOLERANCE = 5.0         # points tolerance for zone touch detection
 CONFIRMATION_WINDOW_MIN = 30  # wait for confirmation within 30 min of zone touch
-CONSOLIDATION_RANGE = 50      # max range for consolidation
 AGGRESSION_MIN_CONTRACTS = 20 # min contracts for aggression
 ABSORPTION_THRESHOLD = 0.30   # min opposing volume ratio for absorption
 SWING_LOOKBACK = 5            # candles to look left/right for swing detection
@@ -452,15 +473,15 @@ def backtest(features_df, impulses, mbo_df, filename):
             entry_time = np.datetime64(touch_time)
             entry_price = touch_price
             
-            # ── Fixed SL: 100 points, Fixed TP: 100 points (1:1 RR) ──
+            # ── Dynamic Fixed SL/TP based on Asset (1:1 RR) ──
             if imp_type == 'up':
-                sl_price = entry_price - 100
-                tp_price = entry_price + 100
+                sl_price = entry_price - SL_DISTANCE_POINTS
+                tp_price = entry_price + TP_DISTANCE_POINTS
             else:
-                sl_price = entry_price + 100
-                tp_price = entry_price - 100
+                sl_price = entry_price + SL_DISTANCE_POINTS
+                tp_price = entry_price - TP_DISTANCE_POINTS
                 
-            sl_distance = 100
+            sl_distance = SL_DISTANCE_POINTS
             reward_risk_ratio = 1.0  # 1:1 RR
             
             end_time = entry_time + np.timedelta64(4, 'h')
@@ -701,7 +722,8 @@ def stream_main():
     if all_signals:
         result_df = pd.DataFrame(all_signals)
         os.makedirs("orderflow_ml", exist_ok=True)
-        result_df.to_csv("orderflow_ml/volume_delta_dataset.csv", index=False)
+        clean_symbol = SYMBOL.split('.')[0]
+        result_df.to_csv(f"orderflow_ml/volume_delta_dataset_{clean_symbol}.csv", index=False)
         print(f"✅ CSV saved: {len(result_df)} signals")
 
 def main():
@@ -712,8 +734,9 @@ def main():
     if all_signals:
         result_df = pd.DataFrame(all_signals)
         os.makedirs("orderflow_ml", exist_ok=True)
-        result_df.to_csv("orderflow_ml/volume_delta_dataset.csv", index=False)
-        print(f"\n✅ Results exported to orderflow_ml/volume_delta_dataset.csv. Total signals: {len(result_df)}")
+        clean_symbol = SYMBOL.split('.')[0]
+        result_df.to_csv(f"orderflow_ml/volume_delta_dataset_{clean_symbol}.csv", index=False)
+        print(f"\n✅ Results exported to orderflow_ml/volume_delta_dataset_{clean_symbol}.csv. Total signals: {len(result_df)}")
         
         # Print summary
         total = len(result_df)
