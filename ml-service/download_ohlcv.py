@@ -1,6 +1,6 @@
 import databento as db
 import os, sys
-from datetime import datetime, timedelta
+import time
 
 api_key = os.environ.get("DATABENTO_API_KEY")
 client = db.Historical(api_key)
@@ -15,11 +15,12 @@ for date in dates:
     if os.path.exists(out_path):
         print(f"⏩ {date} already exists in cache. Skipping.")
         continue
-        
-    import time
+
     retries = 3
     for attempt in range(retries):
+        temp_dbn = os.path.join(os.path.dirname(out_path), f"temp_ohlcv_{date}.dbn")
         try:
+            # Use path= to stream to disk (fixes latin-1 encoding issue)
             data = client.timeseries.get_range(
                 dataset="GLBX.MDP3",
                 schema="ohlcv-1m",
@@ -27,8 +28,12 @@ for date in dates:
                 stype_in="parent",
                 start=f"{date}T08:00:00Z",
                 end=f"{date}T21:00:00Z",
+                path=temp_dbn,
             )
             df = data.to_df()
+            if df.empty:
+                print(f"⚠️ No OHLCV data for {date} (holiday/weekend).")
+                break
             df.to_parquet(out_path)
             print(f"✅ Saved {clean_symbol} OHLCV {date} ({len(df)} rows)")
             break
@@ -38,3 +43,6 @@ for date in dates:
                 time.sleep(3)
             else:
                 print(f"❌ Failed to download OHLCV for {date} after {retries} attempts: {e}")
+        finally:
+            if os.path.exists(temp_dbn):
+                os.remove(temp_dbn)
