@@ -6,8 +6,10 @@ import glob
 from download_missing_mbo import download_missing_mbo
 
 def run_pipeline():
-    # 1. Define 2024 months (Resuming from March)
+    # 1. Define 2024 months (Full 6 months for GC)
     months = [
+        ("2024-01-01", "2024-01-31"),
+        ("2024-02-01", "2024-02-29"),
         ("2024-03-01", "2024-03-31"),
         ("2024-04-01", "2024-04-30"),
         ("2024-05-01", "2024-05-31"),
