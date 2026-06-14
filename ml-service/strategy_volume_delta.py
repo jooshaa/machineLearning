@@ -243,6 +243,89 @@ def find_delta_zones(profile, impulse):
         'exhaustion_score': exhaustion_score
     }
 
+def extract_touch_features(mbo_df, features_df, touch_time, touch_price, direction):
+    """
+    Captures institutional orderbook signals at the EXACT moment price returns to zone.
+    This is the "entry audit" — what real money is doing at the level right now.
+
+    Features extracted:
+    - touch_cvd_slope:     net delta in the 60s before touch (buyers loading up?)
+    - touch_bid_stack:     total resting bid size within tick_radius of zone
+    - touch_ask_stack:     total resting ask size within tick_radius of zone
+    - touch_ob_imbalance:  bid_stack / ask_stack (>1 = bid heavy = bullish at zone)
+    - touch_absorption:    opposing trade volume absorbed at zone (sellers selling into bids)
+    - touch_spoof_count:   large orders added then cancelled fast near zone (fake liquidity)
+    """
+    tick_radius = 0.5 if 'GC' in SYMBOL else 5.0
+
+    touch_np   = np.datetime64(touch_time)
+    window_60s = touch_np - np.timedelta64(60, 's')
+    window_10s = touch_np + np.timedelta64(10, 's')
+
+    # ── 1. CVD slope: net buying/selling momentum in 60s before touch ──
+    if isinstance(features_df.index, pd.DatetimeIndex):
+        recent = features_df[
+            (features_df.index.values >= window_60s) &
+            (features_df.index.values <= touch_np)
+        ]
+    else:
+        recent = pd.DataFrame()
+    touch_cvd_slope = float(recent['delta'].tail(30).sum()) if len(recent) >= 5 else 0.0
+
+    # ── 2. Resting limit orders stacked at zone (institutional defense) ──
+    adds_at_zone = mbo_df[
+        (mbo_df.index.values >= window_60s) &
+        (mbo_df.index.values <= touch_np) &
+        (mbo_df['action'] == 'A') &
+        (abs(mbo_df['price'] - touch_price) <= tick_radius)
+    ]
+    bid_stack = float(adds_at_zone[adds_at_zone['side'] == 'B']['size'].sum())
+    ask_stack = float(adds_at_zone[adds_at_zone['side'] == 'A']['size'].sum())
+    ob_imbalance = round(bid_stack / (ask_stack + 1e-9), 3)
+
+    # ── 3. Absorption: opposing trades at zone that didn't move price ──
+    trades_at_zone = mbo_df[
+        (mbo_df.index.values >= window_60s) &
+        (mbo_df.index.values <= touch_np) &
+        (mbo_df['action'] == 'T') &
+        (abs(mbo_df['price'] - touch_price) <= tick_radius)
+    ]
+    if direction == 'buy':
+        # Sellers hitting bid at the zone — being absorbed by resting buyers
+        opposing_vol = float(trades_at_zone[trades_at_zone['side'] == 'B']['size'].sum())
+    else:
+        # Buyers lifting ask at the zone — being absorbed by resting sellers
+        opposing_vol = float(trades_at_zone[trades_at_zone['side'] == 'A']['size'].sum())
+
+    # ── 4. Spoof detection: large adds cancelled within 10s near zone ──
+    adds_near = mbo_df[
+        (mbo_df.index.values >= window_60s) &
+        (mbo_df.index.values <= window_10s) &
+        (mbo_df['action'] == 'A') &
+        (abs(mbo_df['price'] - touch_price) <= tick_radius * 3)
+    ]
+    cancels_near = mbo_df[
+        (mbo_df.index.values >= window_60s) &
+        (mbo_df.index.values <= window_10s) &
+        (mbo_df['action'] == 'C')
+    ]
+    spoof_count = 0
+    if not adds_near.empty and not cancels_near.empty:
+        large_threshold = adds_near['size'].quantile(0.85) if len(adds_near) > 5 else 20
+        large_adds = adds_near[adds_near['size'] >= large_threshold]
+        quick_cancel_ids = set(cancels_near['order_id'].values)
+        spoof_count = int(large_adds['order_id'].isin(quick_cancel_ids).sum())
+
+    return {
+        'touch_cvd_slope':    round(touch_cvd_slope, 2),
+        'touch_bid_stack':    round(bid_stack, 0),
+        'touch_ask_stack':    round(ask_stack, 0),
+        'touch_ob_imbalance': ob_imbalance,
+        'touch_absorption':   round(opposing_vol, 0),
+        'touch_spoof_count':  spoof_count,
+    }
+
+
 def check_orderbook_state(mbo_df, target_price, touch_time, direction):
     """
     Checks the orderbook state at touch_time for large limit orders and spoofing.
@@ -571,13 +654,19 @@ def backtest(features_df, impulses, mbo_df, filename):
             else:
                 zone_delta_pct = 0.0
 
-            # Orderbook confirmation (already computed above in the POC block)
+            # Orderbook confirmation
             c_ts = pd.Timestamp(touch_time)
+            trade_direction = 'buy' if imp_type == 'up' else 'sell'
             large_limit_present, layering = check_orderbook_state(
-                mbo_df, target_price, touch_time, 'buy' if imp_type == 'up' else 'sell'
+                mbo_df, target_price, touch_time, trade_direction
             )
 
-            # US Market open is 14:30 UTC. 
+            # ── At-touch institutional features (the real edge signal) ──
+            touch_feats = extract_touch_features(
+                mbo_df, features_df, touch_time, touch_price, trade_direction
+            )
+
+            # US Market open is 14:30 UTC.
             # session 0: Pre-market (<14 UTC), 1: Morning (14-17 UTC), 2: Afternoon (>17 UTC)
             session = 0 if c_ts.hour < 14 else (1 if c_ts.hour < 17 else 2)
 
@@ -588,9 +677,40 @@ def backtest(features_df, impulses, mbo_df, filename):
 
             impulse_points = round(imp['points'], 2)
 
+            # ── MAE / MFE: trade quality audit ──
+            # MFE = how far price moved IN our favor before resolution
+            # MAE = how far price moved AGAINST us before resolution
+            mfe_r, mae_r, mfe_before_mae = 0.0, 0.0, 0
+            if not post_signal.empty:
+                prices = post_signal['price'].values
+                if imp_type == 'up':
+                    mfe_pts = float(np.max(prices) - entry_price)
+                    mae_pts = float(entry_price - np.min(prices))
+                    # Did price reach 0.3R favorable before 0.3R adverse?
+                    fav_threshold = entry_price + sl_distance * 0.3
+                    adv_threshold = entry_price - sl_distance * 0.3
+                    times = post_signal.index.values
+                    fav_hits = times[post_signal['price'].values >= fav_threshold]
+                    adv_hits = times[post_signal['price'].values <= adv_threshold]
+                else:
+                    mfe_pts = float(entry_price - np.min(prices))
+                    mae_pts = float(np.max(prices) - entry_price)
+                    fav_threshold = entry_price - sl_distance * 0.3
+                    adv_threshold = entry_price + sl_distance * 0.3
+                    times = post_signal.index.values
+                    fav_hits = times[post_signal['price'].values <= fav_threshold]
+                    adv_hits = times[post_signal['price'].values >= adv_threshold]
+
+                mfe_r = round(mfe_pts / max(sl_distance, 1), 3)
+                mae_r = round(mae_pts / max(sl_distance, 1), 3)
+                if len(fav_hits) > 0 and len(adv_hits) == 0:
+                    mfe_before_mae = 1
+                elif len(fav_hits) > 0 and len(adv_hits) > 0:
+                    mfe_before_mae = 1 if fav_hits[0] < adv_hits[0] else 0
+
             signals.append({
                 'entry_time': str(touch_time) + 'Z',
-                'direction': 'buy' if imp_type == 'up' else 'sell',
+                'direction': trade_direction,
                 'score': 0,
                 'entry_price': entry_price,
                 'tp_price': tp_price,
@@ -601,18 +721,28 @@ def backtest(features_df, impulses, mbo_df, filename):
                 'absorption': absorption_detected,
                 'exhaustion': delta_exhaustion,
                 'exhaustion_score': delta_exhaustion_score,
-                # ── New ML features ──
+                # ── Impulse quality ──
                 'impulse_points': impulse_points,
                 'impulse_speed': impulse_speed,
                 'impulse_cvd': round(impulse_cvd, 2),
+                # ── Zone quality ──
                 'zone_position': zone_position,
                 'zone_delta_pct': zone_delta_pct,
                 'zone_volume': zones.get('zone_volume', 0.0),
+                # ── Legacy orderbook flags ──
                 'ob_large_limit': int(large_limit_present),
                 'ob_layering': int(layering),
+                # ── At-touch institutional features ──
+                **touch_feats,
+                # ── Context ──
                 'session': session,
                 'volatility': volatility,
                 'trend': trend,
+                # ── Trade quality audit ──
+                'mfe_r': mfe_r,
+                'mae_r': mae_r,
+                'mfe_before_mae': mfe_before_mae,
+                # ── Outcome ──
                 'outcome': outcome,
                 'result': result,
                 'r_multiple': r_multiple,

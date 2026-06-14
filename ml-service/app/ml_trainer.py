@@ -11,14 +11,36 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 FEATURES = [
+    # Time context
     'hour', 'day_of_week',
-    'sl_distance', 'reward_risk',
-    'score', 'absorption', 'exhaustion_score',
+    # Impulse quality
     'impulse_points', 'impulse_speed', 'impulse_cvd',
+    # Zone quality
     'zone_position', 'zone_delta_pct', 'zone_volume',
+    # Legacy orderbook flags (binary)
     'ob_large_limit', 'ob_layering',
+    # At-touch institutional features (real edge signal)
+    'touch_cvd_slope',      # net delta momentum INTO the zone (60s window)
+    'touch_bid_stack',      # resting bid size at zone (defending buyers)
+    'touch_ask_stack',      # resting ask size at zone (competing sellers)
+    'touch_ob_imbalance',   # bid/ask ratio at zone (>1 = bullish, <1 = bearish)
+    'touch_absorption',     # opposing volume absorbed at zone (conviction signal)
+    'touch_spoof_count',    # fake liquidity count (spoof = weaker level)
+    # Trade quality audit (for learning what good entries look like)
+    'mfe_r',                # max favorable excursion in R (did it go our way first?)
+    'mae_r',                # max adverse excursion in R (how bad did it get before winning?)
+    'mfe_before_mae',       # 1 if price moved favorably before adversely (clean entry)
+    # Market context
+    'absorption',
     'session', 'volatility', 'trend',
 ]
+
+# Features that should NOT be used as predictors (leakage from future)
+# mfe_r, mae_r, mfe_before_mae describe what happened AFTER entry.
+# Use them for analysis/filtering only, not as model input features.
+LEAKAGE_FEATURES = ['mfe_r', 'mae_r', 'mfe_before_mae']
+
+TRAIN_FEATURES = [f for f in FEATURES if f not in LEAKAGE_FEATURES]
 
 def train_model():
     SYMBOL = os.getenv("TARGET_SYMBOL", "NQ.FUT")
@@ -53,11 +75,20 @@ def train_model():
     # ── Target ──
     df['target'] = (df['outcome'] == 'win').astype(int)
 
-    # ── Only keep features that exist in the CSV ──
-    available = [f for f in FEATURES if f in df.columns]
-    missing   = [f for f in FEATURES if f not in df.columns]
+    # ── Only keep training features that exist in the CSV ──
+    available = [f for f in TRAIN_FEATURES if f in df.columns]
+    missing   = [f for f in TRAIN_FEATURES if f not in df.columns]
     if missing:
         print(f"⚠️  Missing features (will be skipped): {missing}")
+
+    # ── Audit features: leakage columns used for analysis, not training ──
+    audit_cols = [f for f in LEAKAGE_FEATURES if f in df.columns]
+    if audit_cols:
+        wins  = df[df['target'] == 1]
+        losses = df[df['target'] == 0]
+        print("\n── Trade Quality Audit (not used in model) ──")
+        for col in audit_cols:
+            print(f"  {col}:  wins={wins[col].mean():.3f}  losses={losses[col].mean():.3f}")
 
     X = df[available].copy()
 
