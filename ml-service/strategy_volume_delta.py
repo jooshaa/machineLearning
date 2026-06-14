@@ -258,15 +258,32 @@ def extract_touch_features(mbo_df, features_df, touch_time, touch_price, directi
     """
     tick_radius = 0.5 if 'GC' in SYMBOL else 5.0
 
-    touch_np   = np.datetime64(touch_time)
+    # Strip timezone from touch_time so comparisons work with both
+    # tz-aware and tz-naive index values in mbo_df / features_df
+    t = pd.Timestamp(touch_time)
+    if t.tzinfo is not None:
+        t = t.tz_convert('UTC').tz_localize(None)
+    touch_np   = np.datetime64(t)
     window_60s = touch_np - np.timedelta64(60, 's')
     window_10s = touch_np + np.timedelta64(10, 's')
 
+    # Normalise mbo_df index to naive UTC once for all comparisons below
+    mbo_idx = mbo_df.index
+    if hasattr(mbo_idx, 'tz') and mbo_idx.tz is not None:
+        mbo_idx_values = mbo_idx.tz_convert('UTC').tz_localize(None).values
+    else:
+        mbo_idx_values = mbo_idx.values
+
     # ── 1. CVD slope: net buying/selling momentum in 60s before touch ──
     if isinstance(features_df.index, pd.DatetimeIndex):
+        feat_idx = features_df.index
+        if hasattr(feat_idx, 'tz') and feat_idx.tz is not None:
+            feat_idx_values = feat_idx.tz_convert('UTC').tz_localize(None).values
+        else:
+            feat_idx_values = feat_idx.values
         recent = features_df[
-            (features_df.index.values >= window_60s) &
-            (features_df.index.values <= touch_np)
+            (feat_idx_values >= window_60s) &
+            (feat_idx_values <= touch_np)
         ]
     else:
         recent = pd.DataFrame()
@@ -274,8 +291,8 @@ def extract_touch_features(mbo_df, features_df, touch_time, touch_price, directi
 
     # ── 2. Resting limit orders stacked at zone (institutional defense) ──
     adds_at_zone = mbo_df[
-        (mbo_df.index.values >= window_60s) &
-        (mbo_df.index.values <= touch_np) &
+        (mbo_idx_values >= window_60s) &
+        (mbo_idx_values <= touch_np) &
         (mbo_df['action'] == 'A') &
         (abs(mbo_df['price'] - touch_price) <= tick_radius)
     ]
@@ -285,28 +302,26 @@ def extract_touch_features(mbo_df, features_df, touch_time, touch_price, directi
 
     # ── 3. Absorption: opposing trades at zone that didn't move price ──
     trades_at_zone = mbo_df[
-        (mbo_df.index.values >= window_60s) &
-        (mbo_df.index.values <= touch_np) &
+        (mbo_idx_values >= window_60s) &
+        (mbo_idx_values <= touch_np) &
         (mbo_df['action'] == 'T') &
         (abs(mbo_df['price'] - touch_price) <= tick_radius)
     ]
     if direction == 'buy':
-        # Sellers hitting bid at the zone — being absorbed by resting buyers
         opposing_vol = float(trades_at_zone[trades_at_zone['side'] == 'B']['size'].sum())
     else:
-        # Buyers lifting ask at the zone — being absorbed by resting sellers
         opposing_vol = float(trades_at_zone[trades_at_zone['side'] == 'A']['size'].sum())
 
     # ── 4. Spoof detection: large adds cancelled within 10s near zone ──
     adds_near = mbo_df[
-        (mbo_df.index.values >= window_60s) &
-        (mbo_df.index.values <= window_10s) &
+        (mbo_idx_values >= window_60s) &
+        (mbo_idx_values <= window_10s) &
         (mbo_df['action'] == 'A') &
         (abs(mbo_df['price'] - touch_price) <= tick_radius * 3)
     ]
     cancels_near = mbo_df[
-        (mbo_df.index.values >= window_60s) &
-        (mbo_df.index.values <= window_10s) &
+        (mbo_idx_values >= window_60s) &
+        (mbo_idx_values <= window_10s) &
         (mbo_df['action'] == 'C')
     ]
     spoof_count = 0
