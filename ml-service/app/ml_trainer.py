@@ -17,8 +17,6 @@ FEATURES = [
     'impulse_points', 'impulse_speed', 'impulse_cvd',
     # Zone quality
     'zone_position', 'zone_delta_pct', 'zone_volume',
-    # Legacy orderbook flags (binary)
-    'ob_large_limit', 'ob_layering',
     # At-touch institutional features (real edge signal)
     'touch_cvd_slope',      # net delta momentum INTO the zone (60s window)
     'touch_bid_stack',      # resting bid size at zone (defending buyers)
