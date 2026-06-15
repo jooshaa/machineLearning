@@ -796,6 +796,19 @@ def stream_main():
         print("No parquet files found. Creating mock data.")
         create_mock_data()
         files = ["2023-01-03.parquet"]
+
+    start_date = os.getenv("START_DATE")
+    end_date   = os.getenv("END_DATE")
+    if start_date or end_date:
+        def _in_range(fname):
+            d = fname.replace(".parquet", "")
+            if start_date and d < start_date:
+                return False
+            if end_date and d > end_date:
+                return False
+            return True
+        files = [f for f in files if _in_range(f)]
+        print(f"Date filter {start_date} → {end_date}: {len(files)} files")
         
     for filename in files:
         path = os.path.join(cache_dir, filename)
