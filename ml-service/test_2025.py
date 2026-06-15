@@ -49,7 +49,8 @@ X = df[FEATURES].fillna(0.0)
 y = df['target']
 
 print(f"Loading model: {MODEL_PATH}")
-model = joblib.load(MODEL_PATH)
+saved   = joblib.load(MODEL_PATH)
+model   = saved['model'] if isinstance(saved, dict) else saved
 
 y_pred  = model.predict(X)
 y_proba = model.predict_proba(X)[:, 1]
